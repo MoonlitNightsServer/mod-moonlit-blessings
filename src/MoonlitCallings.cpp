@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "Creature.h"
 #include "Log.h"
+#include "NPCPackets.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "Trainer.h"

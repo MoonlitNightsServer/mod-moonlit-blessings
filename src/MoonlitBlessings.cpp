@@ -1,8 +1,8 @@
-// Moonlit Callings (testing stage): the C++ half of the Callings talent system.
+// Moonlit Blessings (testing stage): the C++ half of the Blessings talent system.
 //
-// For the classes listed in MoonlitCallings.Classes the stock ways of gaining talents are closed so that the Callings system (Lua, mod-ale) is the only route:
+// For the classes listed in MoonlitBlessings.Classes the stock ways of gaining talents are closed so that the Blessings system (Lua, mod-ale) is the only route:
 //   * learning a talent from the talent window is refused;
-//   * trainers show no spells and teach nothing (class spells arrive through Learn Spells, everything else through the Callings);
+//   * trainers show no spells and teach nothing (class spells arrive through Learn Spells, everything else through the Blessings);
 //   * on login the stock talents are reset once and free talent points are set to 0.
 // Spells granted by the Lua system go through Player::learnSpell and are NOT blocked: this module only uses the talent veto and the trainer hooks.
 // ~Moonlit Nights Team
@@ -19,12 +19,12 @@
 
 namespace
 {
-    bool IsCallingsClass(Player const* player)
+    bool IsBlessingsClass(Player const* player)
     {
-        if (!player || !sConfigMgr->GetOption<bool>("MoonlitCallings.Enable", false))
+        if (!player || !sConfigMgr->GetOption<bool>("MoonlitBlessings.Enable", false))
             return false;
 
-        std::string const classes = sConfigMgr->GetOption<std::string>("MoonlitCallings.Classes", "5,7");
+        std::string const classes = sConfigMgr->GetOption<std::string>("MoonlitBlessings.Classes", "5,7");
         std::string token;
         for (size_t i = 0; i <= classes.size(); ++i)
         {
@@ -41,10 +41,10 @@ namespace
     }
 }
 
-class MoonlitCallingsPlayer : public PlayerScript
+class MoonlitBlessingsPlayer : public PlayerScript
 {
 public:
-    MoonlitCallingsPlayer() : PlayerScript("MoonlitCallingsPlayer", {
+    MoonlitBlessingsPlayer() : PlayerScript("MoonlitBlessingsPlayer", {
         PLAYERHOOK_CAN_LEARN_TALENT,
         PLAYERHOOK_ON_GET_TRAINER_SPELL_STATE,
         PLAYERHOOK_ON_BEFORE_RECEIVE_SPELL_LIST_FROM_TRAINER,
@@ -53,24 +53,24 @@ public:
 
     bool OnPlayerCanLearnTalent(Player* player, TalentEntry const* /*talent*/, uint32 /*rank*/) override
     {
-        return !IsCallingsClass(player);
+        return !IsBlessingsClass(player);
     }
 
     void OnPlayerGetTrainerSpellState(Player const* player, uint32 /*trainerId*/, uint32 /*spellId*/, Trainer::SpellState& state) override
     {
-        if (IsCallingsClass(player))
+        if (IsBlessingsClass(player))
             state = Trainer::SpellState::Unavailable;
     }
 
     void OnPlayerBeforeReceiveSpellListFromTrainer(Player* player, Creature* /*trainer*/, WorldPackets::NPC::TrainerList& list) override
     {
-        if (IsCallingsClass(player))
+        if (IsBlessingsClass(player))
             list.Spells.clear();
     }
 
     void OnPlayerLogin(Player* player) override
     {
-        if (!IsCallingsClass(player))
+        if (!IsBlessingsClass(player))
             return;
 
         // The stock talent system is closed for this class: take back anything learned before, once (a no-op when nothing is learned)
@@ -82,7 +82,7 @@ public:
     }
 };
 
-void AddSC_moonlit_callings()
+void AddSC_moonlit_blessings()
 {
-    new MoonlitCallingsPlayer();
+    new MoonlitBlessingsPlayer();
 }

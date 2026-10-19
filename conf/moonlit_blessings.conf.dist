@@ -1,0 +1,12 @@
+[worldserver]
+
+###################################################################################################
+# Moonlit Blessings (testing stage)
+###################################################################################################
+
+# Enable the Blessings lock? When on, the classes below cannot gain stock talents or buy trainer spells.
+# The Blessings Lua system (lua_scripts/moonlit_blessings) grants everything instead. (1 = on, 0 = off)
+MoonlitBlessings.Enable = 1
+
+# Class IDs that use the Blessings system: 5 = Priest, 7 = Shaman (comma separated)
+MoonlitBlessings.Classes = "5,7"

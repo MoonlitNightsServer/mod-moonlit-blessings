@@ -25,6 +25,7 @@ namespace
         SPELL_MARTYRS_MANTLE       = 1640012
     };
 
+
     constexpr int32 AEGIS_CAP_PCT_OF_HEALTH = 25;          // shield size, percent of maximum health
     constexpr float AEGIS_REFILL_INTERVAL = 4.0f;          // seconds: a self-cast Power Word: Shield on its 4 second cooldown
     constexpr float AEGIS_SPELL_POWER_COEFFICIENT = 0.8068f;
@@ -170,6 +171,33 @@ class spell_blessings_sanctified_blow : public SpellScript
     }
 };
 
+// Favor of the Titan's Maul: the core's "Titan's Grip" switch lets a two-handed weapon share the hands with a shield (the stance requires one).
+class spell_blessings_titans_maul : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_titans_maul);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            player->SetCanTitanGrip(true);
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+        {
+            player->SetCanTitanGrip(false);
+            player->AutoUnequipOffhandIfNeed();
+        }
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_blessings_titans_maul::HandleApply, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_blessings_titans_maul::HandleRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 // Re-run the armour check whenever gear changes.
 class MoonlitBlessingsGearScript : public PlayerScript
 {
@@ -189,5 +217,6 @@ void AddMoonlitBlessingsSpellScripts()
     RegisterSpellScript(spell_blessings_eternal_aegis_shield);
     RegisterSpellScript(spell_blessings_martyrs_mantle);
     RegisterSpellScript(spell_blessings_sanctified_blow);
+    RegisterSpellScript(spell_blessings_titans_maul);
     new MoonlitBlessingsGearScript();
 }

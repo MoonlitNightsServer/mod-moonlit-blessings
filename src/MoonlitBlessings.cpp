@@ -82,7 +82,10 @@ public:
     }
 };
 
+void AddMoonlitBlessingsSpellScripts();
+
 void AddSC_moonlit_blessings()
 {
     new MoonlitBlessingsPlayer();
+    AddMoonlitBlessingsSpellScripts();
 }

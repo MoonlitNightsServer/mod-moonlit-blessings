@@ -8,6 +8,7 @@
 // Spell ids come from the registry blocks 1,640,000 (Martyr). The rows are in data/sql/db-world/zz_moonlit_blessings_10_spell_dbc.sql.
 // ~Moonlit Nights Team
 
+#include "BlessingsHelpers.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Player.h"
@@ -34,7 +35,7 @@ namespace
 
     int32 AegisCap(Unit const* unit)
     {
-        return int32(unit->CountPctFromMaxHealth(AEGIS_CAP_PCT_OF_HEALTH));
+        return BlessingsHelpers::Martyr::AegisCap(unit);     // base 25% plus the Boons that raise it
     }
 
     // Power Word: Shield rank 1 absorbs 44 and rank 10 (level 60) 848: a straight line between them stands in for the shield's size at any level.

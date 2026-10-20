@@ -27,7 +27,7 @@ namespace
         if (!player || !sConfigMgr->GetOption<bool>("MoonlitBlessings.Enable", false))
             return false;
 
-        std::string const classes = sConfigMgr->GetOption<std::string>("MoonlitBlessings.Classes", "5,7");
+        std::string const classes = sConfigMgr->GetOption<std::string>("MoonlitBlessings.Classes", "2,5,7");
         std::string token;
         for (size_t i = 0; i <= classes.size(); ++i)
         {
@@ -123,6 +123,10 @@ void AddMoonlitBlessingsMartyrScripts();
 void AddMoonlitBlessingsPenitentScripts();
 void AddMoonlitBlessingsShadowScripts();
 void AddMoonlitBlessingsVicarScripts();
+void AddMoonlitBlessingsHolyScripts();
+void AddMoonlitBlessingsInquisitorScripts();
+void AddMoonlitBlessingsProtectionScripts();
+void AddMoonlitBlessingsRetributionScripts();
 
 void AddSC_moonlit_blessings()
 {
@@ -136,5 +140,9 @@ void AddSC_moonlit_blessings()
     AddMoonlitBlessingsPenitentScripts();
     AddMoonlitBlessingsShadowScripts();
     AddMoonlitBlessingsVicarScripts();
+    AddMoonlitBlessingsHolyScripts();
+    AddMoonlitBlessingsInquisitorScripts();
+    AddMoonlitBlessingsProtectionScripts();
+    AddMoonlitBlessingsRetributionScripts();
     new MoonlitBlessingsWorld();
 }

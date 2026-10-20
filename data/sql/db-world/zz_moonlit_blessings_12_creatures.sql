@@ -10,3 +10,13 @@ INSERT INTO `creature_template` SELECT * FROM `mb_clone`;
 DROP TEMPORARY TABLE `mb_clone`;
 INSERT INTO `creature_template_model` (`CreatureID`, `Idx`, `CreatureDisplayID`, `DisplayScale`, `Probability`, `VerifiedBuild`) VALUES (1640130, 0, 27769, 1, 1, 0);
 INSERT INTO `creature_template_spell` (`CreatureID`, `Index`, `Spell`, `VerifiedBuild`) VALUES (1640130, 0, 1640120, 0);
+
+-- The Tentacle of the Old Gods (1630090, Void Lasher): a Tentacle of Markaru clone (21335, no AI, no script) made friendly; the Shadow scripts drive it.
+DELETE FROM `creature_template` WHERE `entry` = 1630090;
+DELETE FROM `creature_template_model` WHERE `CreatureID` = 1630090;
+DROP TEMPORARY TABLE IF EXISTS `mb_clone`;
+CREATE TEMPORARY TABLE `mb_clone` SELECT * FROM `creature_template` WHERE `entry` = 21335;
+UPDATE `mb_clone` SET `entry` = 1630090, `name` = 'Tentacle of the Old Gods', `subname` = '', `faction` = 35, `difficulty_entry_1` = 0, `difficulty_entry_2` = 0, `difficulty_entry_3` = 0;
+INSERT INTO `creature_template` SELECT * FROM `mb_clone`;
+DROP TEMPORARY TABLE `mb_clone`;
+INSERT INTO `creature_template_model` (`CreatureID`, `Idx`, `CreatureDisplayID`, `DisplayScale`, `Probability`, `VerifiedBuild`) VALUES (1630090, 0, 20227, 1, 1, 0);

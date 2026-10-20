@@ -20,3 +20,24 @@ UPDATE `mb_clone` SET `entry` = 1630090, `name` = 'Tentacle of the Old Gods', `s
 INSERT INTO `creature_template` SELECT * FROM `mb_clone`;
 DROP TEMPORARY TABLE `mb_clone`;
 INSERT INTO `creature_template_model` (`CreatureID`, `Idx`, `CreatureDisplayID`, `DisplayScale`, `Probability`, `VerifiedBuild`) VALUES (1630090, 0, 20227, 1, 1, 0);
+
+-- The melee Mirror Image of the Favor of the Spellstriker (1440280): a Rune Weapon clone (27893, the Dancing Rune Weapon: warrior stats, weapon visual aura 53160) renamed
+-- and driven by the creature script npc_spellblade_mirror_blade (SpellbladeScripts.cpp); its owner casts Clone Me on it, so it looks like the mage.
+DELETE FROM `creature_template` WHERE `entry` = 1440280;
+DELETE FROM `creature_template_model` WHERE `CreatureID` = 1440280;
+DELETE FROM `creature_template_addon` WHERE `entry` = 1440280;
+DROP TEMPORARY TABLE IF EXISTS `mb_clone`;
+CREATE TEMPORARY TABLE `mb_clone` SELECT * FROM `creature_template` WHERE `entry` = 27893;
+UPDATE `mb_clone` SET `entry` = 1440280, `name` = 'Mirror Image', `subname` = '', `ScriptName` = 'npc_spellblade_mirror_blade', `difficulty_entry_1` = 0, `difficulty_entry_2` = 0, `difficulty_entry_3` = 0;
+INSERT INTO `creature_template` SELECT * FROM `mb_clone`;
+DROP TEMPORARY TABLE `mb_clone`;
+DROP TEMPORARY TABLE IF EXISTS `mb_model`;
+CREATE TEMPORARY TABLE `mb_model` SELECT * FROM `creature_template_model` WHERE `CreatureID` = 27893;
+UPDATE `mb_model` SET `CreatureID` = 1440280, `VerifiedBuild` = 0;
+INSERT INTO `creature_template_model` SELECT * FROM `mb_model`;
+DROP TEMPORARY TABLE `mb_model`;
+DROP TEMPORARY TABLE IF EXISTS `mb_addon`;
+CREATE TEMPORARY TABLE `mb_addon` SELECT * FROM `creature_template_addon` WHERE `entry` = 27893;
+UPDATE `mb_addon` SET `entry` = 1440280;
+INSERT INTO `creature_template_addon` SELECT * FROM `mb_addon`;
+DROP TEMPORARY TABLE `mb_addon`;

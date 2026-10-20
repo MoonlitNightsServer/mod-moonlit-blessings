@@ -27,7 +27,7 @@ namespace
         if (!player || !sConfigMgr->GetOption<bool>("MoonlitBlessings.Enable", false))
             return false;
 
-        std::string const classes = sConfigMgr->GetOption<std::string>("MoonlitBlessings.Classes", "2,5,7");
+        std::string const classes = sConfigMgr->GetOption<std::string>("MoonlitBlessings.Classes", "2,3,5,7,8");
         std::string token;
         for (size_t i = 0; i <= classes.size(); ++i)
         {

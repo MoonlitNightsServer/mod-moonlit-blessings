@@ -9,4 +9,4 @@
 MoonlitBlessings.Enable = 1
 
 # Class IDs that use the Blessings system: 2 = Paladin, 5 = Priest, 7 = Shaman (comma separated)
-MoonlitBlessings.Classes = "2,5,7"
+MoonlitBlessings.Classes = "2,3,5,7,8"

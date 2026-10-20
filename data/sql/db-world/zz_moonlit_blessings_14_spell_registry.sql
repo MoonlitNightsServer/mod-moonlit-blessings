@@ -1,0 +1,30 @@
+-- Moonlit Blessings: every custom spell id the Blessings use, checked at start-up by the module (an id that is missing from the spell store is logged as an error).
+CREATE TABLE IF NOT EXISTS `moonlit_blessing_spell` (`spell_id` INT UNSIGNED NOT NULL, `name` VARCHAR(100) NOT NULL DEFAULT '', PRIMARY KEY (`spell_id`)) ENGINE=InnoDB;
+DELETE FROM `moonlit_blessing_spell`;
+INSERT INTO `moonlit_blessing_spell` (`spell_id`, `name`) VALUES
+(1610010, 'Favor of Atonement'),
+(1610011, 'Atonement'),
+(1610012, 'Atonement Aegis'),
+(1640010, 'Eternal Aegis'),
+(1640011, 'Eternal Aegis'),
+(1640012, 'Martyr''s Mantle'),
+(1640020, 'Reprimand'),
+(1640030, 'Sanctified Blow'),
+(1640040, 'Holy Charge'),
+(1640041, 'Golden Wings'),
+(1640050, 'Favor of the Crusader'),
+(1640060, 'Righteous Cleave'),
+(1640070, 'Burning Strike'),
+(1640080, 'Martyr''s Resolve'),
+(1640110, 'Lightwell'),
+(1640120, 'Holy Bolt'),
+(1840010, 'Warden''s Stance'),
+(1840020, 'Seismic Taunt'),
+(1840030, 'Bedrock Slam'),
+(1840040, 'Bedrock Barrier'),
+(1840050, 'Favor of the Titan''s Maul'),
+(1840051, 'Favor of the Bastion'),
+(1840060, 'Bedrock Soul'),
+(1840061, 'Bedrock'),
+(1840100, 'Quickened Slam'),
+(1840110, 'Titan''s Shell');

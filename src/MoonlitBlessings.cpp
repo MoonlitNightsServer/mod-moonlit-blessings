@@ -14,6 +14,9 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "Trainer.h"
+#include "WorldScript.h"
+#include "DatabaseEnv.h"
+#include "SpellMgr.h"
 
 #include <set>
 
@@ -82,10 +85,56 @@ public:
     }
 };
 
+
+// At start-up, check that every custom spell the Blessings use (table moonlit_blessing_spell, written by tools/phase2/gen_blessings_spells.py) exists in the spell store.
+class MoonlitBlessingsWorld : public WorldScript
+{
+public:
+    MoonlitBlessingsWorld() : WorldScript("MoonlitBlessingsWorld", { WORLDHOOK_ON_STARTUP }) { }
+
+    void OnStartup() override
+    {
+        QueryResult result = WorldDatabase.Query("SELECT `spell_id`, `name` FROM `moonlit_blessing_spell`");
+        uint32 total = 0, missing = 0;
+        if (result)
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                ++total;
+                if (!sSpellMgr->GetSpellInfo(fields[0].Get<uint32>()))
+                {
+                    ++missing;
+                    LOG_ERROR("server.loading", "Moonlit Blessings: custom spell {} ({}) is not in the spell store", fields[0].Get<uint32>(), fields[1].Get<std::string>());
+                }
+            } while (result->NextRow());
+        }
+
+        LOG_INFO("server.loading", ">> Moonlit Blessings: {} custom spells checked, {} missing", total, missing);
+    }
+};
+
 void AddMoonlitBlessingsSpellScripts();
+void AddMoonlitBlessingsElementalScripts();
+void AddMoonlitBlessingsEnhancementScripts();
+void AddMoonlitBlessingsRestorationScripts();
+void AddMoonlitBlessingsWardenScripts();
+void AddMoonlitBlessingsMartyrScripts();
+void AddMoonlitBlessingsPenitentScripts();
+void AddMoonlitBlessingsShadowScripts();
+void AddMoonlitBlessingsVicarScripts();
 
 void AddSC_moonlit_blessings()
 {
     new MoonlitBlessingsPlayer();
     AddMoonlitBlessingsSpellScripts();
+    AddMoonlitBlessingsElementalScripts();
+    AddMoonlitBlessingsEnhancementScripts();
+    AddMoonlitBlessingsRestorationScripts();
+    AddMoonlitBlessingsWardenScripts();
+    AddMoonlitBlessingsMartyrScripts();
+    AddMoonlitBlessingsPenitentScripts();
+    AddMoonlitBlessingsShadowScripts();
+    AddMoonlitBlessingsVicarScripts();
+    new MoonlitBlessingsWorld();
 }

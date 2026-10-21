@@ -135,6 +135,10 @@ void AddMoonlitBlessingsBeastmasteryScripts();
 void AddMoonlitBlessingsMarksmanshipScripts();
 void AddMoonlitBlessingsSurvivalScripts();
 void AddMoonlitBlessingsWildguardScripts();
+void AddMoonlitBlessingsAfflictionScripts();
+void AddMoonlitBlessingsDemonologyScripts();
+void AddMoonlitBlessingsDestructionScripts();
+void AddMoonlitBlessingsVoidbinderScripts();
 
 void AddSC_moonlit_blessings()
 {
@@ -160,5 +164,9 @@ void AddSC_moonlit_blessings()
     AddMoonlitBlessingsMarksmanshipScripts();
     AddMoonlitBlessingsSurvivalScripts();
     AddMoonlitBlessingsWildguardScripts();
+    AddMoonlitBlessingsAfflictionScripts();
+    AddMoonlitBlessingsDemonologyScripts();
+    AddMoonlitBlessingsDestructionScripts();
+    AddMoonlitBlessingsVoidbinderScripts();
     new MoonlitBlessingsWorld();
 }

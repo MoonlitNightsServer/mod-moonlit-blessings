@@ -30,6 +30,7 @@
 //   spell_blessings_wolf_form_toggle      Spirit Wolf: the form spell as a toggle
 //   spell_blessings_wolf_form             Spirit Wolf: keeps the form's helpers (armour, resistances, speed, weapon attack power) on
 //   spell_blessings_wolf_link             Spirit Wolf: Spirit Link picks the partner and links both
+// Soul Whirl (1840450 and its pulse 1840451) and the leap of Spectral Fang (a Charge effect) need no script: they are plain DBC effects (see warden.py).
 //   (Retired 2026-10-22 with their Boons: cairn_guard, living_rock, ancestral_fortitude, granite_skin, bedrock_keystone, unbroken, and the Titan's Reprisal reset of the Favor.)
 //
 // A passive's helper spell id (the buff or bolt a script casts) is read from the TriggerSpell column of one of its dummy effects, never hard-coded, except where another script has to find a passive (the ids below).
@@ -66,7 +67,9 @@ namespace
         SPELL_WOLF_HELPER            = 1840322,   // hidden: armour, spectral resistances and speed of the form
         SPELL_WOLF_ATTACK_POWER      = 1840323,   // hidden: attack power from the main hand weapon (set by the form script)
         SPELL_WOLF_LINK_AURA         = 1840325,   // the split-damage aura of Spirit Link
-        SPELL_SPECTRAL_FANG          = 1840328,   // the Spirit Wolf's signature ability
+        SPELL_SPECTRAL_FANG          = 1840328,   // the Spirit Wolf's signature ability: a leap (charge) and a bite, 160% weapon damage
+        SPELL_SOUL_WHIRL             = 1840450,   // the Spirit Wolf's area ability (a 6 sec aura that pulses the helper 1840451 every second); it replaced Howl
+        SPELL_HOWL_RETIRED           = 1840326,   // Howl, retired 2026-10-22: its spell row is gone, characters that learned it lose it
         SPELL_STONE_RESOLVE          = 1840230,   // Boons that other scripts look for
         SPELL_SOUL_OF_THE_MOUNTAIN   = 1840370,
         SPELL_EARTHQUAKE_STEP        = 1840400    // its slow helper is the next id
@@ -186,7 +189,7 @@ namespace
         {
             { 1840290, { SPELL_STORMSTRIKE, SPELL_MOLTEN_BLAST }, { SPELL_MOLTEN_BLAST }, 0 },
             { 1840311, { SPELL_LAVA_BURST }, { }, 0 },
-            { 1840320, { SPELL_SPIRIT_WOLF_FORM, 1840324, 1840326, 1840327, SPELL_SPECTRAL_FANG }, { SPELL_SPIRIT_WOLF_FORM, 1840324, 1840326, 1840327, SPELL_SPECTRAL_FANG }, SPELL_SPIRIT_WOLF_FORM }
+            { 1840320, { SPELL_SPIRIT_WOLF_FORM, 1840324, SPELL_SOUL_WHIRL, 1840327, SPELL_SPECTRAL_FANG }, { SPELL_SPIRIT_WOLF_FORM, 1840324, SPELL_SOUL_WHIRL, SPELL_HOWL_RETIRED, 1840327, SPELL_SPECTRAL_FANG }, SPELL_SPIRIT_WOLF_FORM }
         };
 
         for (TeachDef const& def : defs)
@@ -676,6 +679,10 @@ class spell_blessings_warden_teacher : public AuraScript
         for (uint32 const spellId : def->learn)
             if (spellId && !player->HasSpell(spellId))
                 player->learnSpell(spellId);
+
+        // Howl (retired, replaced by Soul Whirl): a character that learned it before loses it
+        if (GetId() == SPELL_FAVOR_SPIRIT_WOLF && player->HasSpell(SPELL_HOWL_RETIRED))
+            player->removeSpell(SPELL_HOWL_RETIRED, SPEC_MASK_ALL, false);
     }
 
     void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)

@@ -1,14 +1,14 @@
 // Moonlit Blessings: C++ spell scripts for the Survival Boons and Favors (registered from AddSC_moonlit_blessings).
 // Bind a script with k.script(spell_id, "class_name") in tools/talents/recipes/survival.py, then regenerate with tools/phase2/gen_blessings_spells.py.
 //
-//   spell_blessings_survival_twin_fangs          Boon: an off-hand swing sometimes strikes again for a share of its damage (weapon in each hand)
-//   spell_blessings_survival_reach_of_the_spear  Boon: Raptor Strike also strikes the enemy behind the first for a share of its damage (two-handed weapon)
-//   spell_blessings_survival_flurry_of_talons    Boon: melee critical strikes give the haste buff only while a weapon is wielded in each hand (the buff is spell data)
+//   spell_blessings_survival_twin_fangs          Boon: a melee auto attack sometimes strikes again for a share of its damage (any weapon; the share is larger with a weapon in each hand)
+//   spell_blessings_survival_reach_of_the_spear  Boon: Raptor Strike also strikes the enemy behind the first for a share of its damage (any weapon; the share is larger with a two-handed weapon)
+//   spell_blessings_survival_flurry_of_talons    Boon: melee critical strikes give the haste buff with any weapon (the buff is spell data); a weapon in each hand adds a second stack
 //   spell_blessings_survival_skewer              RETIRED Boon (replaced by Survivalist's Discipline; the script stays registered so that no id moves): Mongoose Bite opens a bleed (two-handed weapon)
 //   spell_blessings_survival_skewer_barbs        RETIRED Boon: critical strikes extend the hunter's bleeds on the target (two-handed weapon)
-//   spell_blessings_survival_whirling_blades     Boon: Raptor Strike and Mongoose Bite also hit with the off-hand weapon, Counterattack hits twice (weapon in each hand)
+//   spell_blessings_survival_whirling_blades     Boon: Raptor Strike and Mongoose Bite also hit again (off-hand weapon when dual wielding, else the main weapon for 50%), Counterattack hits twice
 //   spell_blessings_survival_blade_storm         Boon: every 8 sec the next Raptor Strike spins and hits every enemy within 8 yards
-//   spell_blessings_survival_impaling_spear      Boon: a critical Raptor Strike stuns and marks the target (two-handed weapon)
+//   spell_blessings_survival_impaling_spear      Boon: a critical Raptor Strike stuns and marks the target (any weapon; the mark is stronger with a two-handed weapon)
 //   spell_blessings_survival_trappers_gambit     Boon: a trap going off resets the other traps and marks the enemies it catches
 //   spell_blessings_survival_greatspear          Favor of the Greatspear: keeps the two-handed stance buff up while a two-handed weapon is wielded
 //   spell_blessings_survival_twin_talons         Favor of the Twin Talons: teaches Dual Wield and keeps the dual wield stance buff up
@@ -16,6 +16,9 @@
 //   spell_blessings_survival_expose_prey         Mastery: attacks on the target of the hunter's Hunter's Mark sometimes ready Mongoose Bite
 //   spell_blessings_survival_predators_edge      Mastery: keeps the dual wield or the two-handed stance (critical damage, off-hand damage, Raptor Strike / Mongoose Bite damage) up
 //   spell_blessings_survival_lone_wolf           Boon of Survival AND Marksmanship: +20% damage while the hunter has no living pet (a stance kept up by a 1 sec check)
+//   spell_blessings_survival_flanking_strike     Kit ability (level 30): the castable; the hunter's hit is spell data, this adds the stacking buff and the pet's strike
+//   spell_blessings_survival_flanking_reset      Kit passive: a Raptor Strike hit may reset the cooldown of Flanking Strike
+//   spell_blessings_survival_cobra_slayer        Boon (Season of Discovery rune): melee attacks may cast a free Mongoose Bite with 45% attack power added
 //   MoonlitSurvivalDamageScript                  Greatspear (auto attack damage) and Snaremaster (melee strikes against enemies the hunter slowed or rooted)
 //
 // Spell ids come from the Survival registry block 1,330,000 (tools/talents/recipes/survival.py asserts every unit and helper named here and the stock ids).
@@ -50,11 +53,13 @@ namespace
         SPELL_SKEWER_BLEED            = 1330031,   // 6 sec bleed, one tick per second; effect 0 holds the damage of one tick
         SPELL_WHIRLING_OFFHAND        = 1330041,   // off-hand weapon hit for 100% of its damage
         SPELL_WHIRLING_ECHO           = 1330042,   // fixed physical hit (the second Counterattack)
+        SPELL_WHIRLING_MAINHAND       = 1330043,   // main-hand weapon hit for 50% (Raptor Strike / Mongoose Bite without an off-hand weapon)
         SPELL_BLADE_STORM_READY       = 1330051,   // the armed state: the next Raptor Strike spins
         SPELL_BLADE_STORM_MAIN        = 1330052,   // main-hand weapon hit for 70%
         SPELL_BLADE_STORM_OFFHAND     = 1330053,   // off-hand weapon hit for 70%
         SPELL_IMPALING_STUN           = 1330061,   // 2 sec stun
         SPELL_IMPALING_MARK           = 1330062,   // 8 sec, 10% more melee damage taken
+        SPELL_IMPALING_MARK_2H        = 1330063,   // 8 sec, 15% more melee damage taken (two-handed weapon)
         SPELL_GAMBIT_MARK             = 1330071,   // 10 sec, 10% more damage taken from the hunter
         SPELL_FAVOR_GREATSPEAR        = 1330080,   // Favor of the Greatspear (the hidden aura)
         SPELL_GREATSPEAR_STANCE       = 1330081,   // the stance buff: effect 0 haste, effect 1 the strike damage percent (also used for auto attacks)
@@ -64,7 +69,12 @@ namespace
         SPELL_LACERATING_BLEED        = 1330111,   // 21 sec bleed, one tick every 3 sec; effect 0 holds the damage of one tick
         SPELL_PREDATORS_DUAL          = 1330141,   // Predator's Edge, dual wield stance
         SPELL_PREDATORS_TWO_HANDED    = 1330142,   // Predator's Edge, two-handed stance
-        SPELL_LONE_WOLF_STANCE        = 1330151    // Lone Wolf: +20% damage done
+        SPELL_LONE_WOLF_STANCE        = 1330151,   // Lone Wolf: +20% damage done
+        SPELL_FLANKING_STRIKE         = 1330180,   // the castable (class mask bit "Flanking Strike")
+        SPELL_FLANKING_BUFF           = 1330181,   // Flanked: Mongoose Bite and Raptor Strike +8% damage per stack, 3 stacks, 10 sec
+        SPELL_FLANKING_PET_HIT        = 1330182,   // the pet's 100% weapon hit
+        SPELL_FLANKING_RESET          = 1330183,   // the hidden passive that resets the cooldown
+        SPELL_COBRA_SLAYER            = 1330190    // Cobra Slayer: effect 0 base chance, 1 step per miss, 2 attack power percent
     };
 
     enum StockSpells : uint32
@@ -81,6 +91,7 @@ namespace
 
     constexpr float REACH_RANGE      = 8.0f;                       // yards from the first enemy within which Reach of the Spear looks for the one behind it
     constexpr float REACH_CONE       = float(M_PI) / 4.0f;         // the enemy behind must be within this angle (either side) of the line from the hunter to the first enemy
+    constexpr float FLANKING_PET_RANGE = 10.0f;                    // the pet joins a Flanking Strike only within this many yards of the target
     constexpr float BLADE_STORM_RANGE = 8.0f;                      // yards around the hunter
     constexpr float GAMBIT_RANGE     = 10.0f;                      // yards around the enemy that set an area trap off
     constexpr int32 SKEWER_TICKS     = 6;                          // the bleed lasts 6 sec in one second ticks (asserted by the recipe)
@@ -204,15 +215,11 @@ namespace
     }
 }
 
-// Twin Fangs: effect 0 holds the percent (amount). Only swings of the off-hand reach here (spell_proc flag); the chance is in the spell_proc row.
+// Twin Fangs: effect 0 holds the percent (amount), effect 1 the percent added while a weapon is wielded in each hand. Every melee auto attack (either hand) reaches here (spell_proc flag);
+// the chance is in the spell_proc row. Works with any weapon.
 class spell_blessings_survival_twin_fangs : public AuraScript
 {
     PrepareAuraScript(spell_blessings_survival_twin_fangs);
-
-    bool CheckProc(ProcEventInfo& /*eventInfo*/)
-    {
-        return IsDualWielding(GetTarget());
-    }
 
     void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
     {
@@ -222,26 +229,26 @@ class spell_blessings_survival_twin_fangs : public AuraScript
         if (!damageInfo || !damageInfo->GetDamage() || !victim)
             return;
 
-        CastShare(GetTarget(), SPELL_TWIN_FANGS_STRIKE, victim, damageInfo->GetDamage(), aurEff->GetAmount(), aurEff);
+        Unit* caster = GetTarget();
+        int32 percent = aurEff->GetAmount();
+        if (IsDualWielding(caster))
+            if (AuraEffect const* bonus = aurEff->GetBase()->GetEffect(EFFECT_1))
+                percent += bonus->GetAmount();
+
+        CastShare(caster, SPELL_TWIN_FANGS_STRIKE, victim, damageInfo->GetDamage(), percent, aurEff);
     }
 
     void Register() override
     {
-        DoCheckProc += AuraCheckProcFn(spell_blessings_survival_twin_fangs::CheckProc);
         OnEffectProc += AuraEffectProcFn(spell_blessings_survival_twin_fangs::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
     }
 };
 
-// Reach of the Spear: effect 0 holds the percent. The thrust goes to the nearest enemy that stands behind the first one: within REACH_RANGE of it, farther from the hunter, and
+// Reach of the Spear: effect 0 holds the percent, effect 1 the percent added while a two-handed weapon is wielded. Works with any weapon. The thrust goes to the nearest enemy that stands behind the first one: within REACH_RANGE of it, farther from the hunter, and
 // inside a narrow cone around the line from the hunter to the first enemy.
 class spell_blessings_survival_reach_of_the_spear : public AuraScript
 {
     PrepareAuraScript(spell_blessings_survival_reach_of_the_spear);
-
-    bool CheckProc(ProcEventInfo& /*eventInfo*/)
-    {
-        return IsTwoHanded(GetTarget());
-    }
 
     void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
     {
@@ -276,29 +283,37 @@ class spell_blessings_survival_reach_of_the_spear : public AuraScript
         }
 
         if (best)
-            CastShare(caster, SPELL_REACH_STRIKE, best, damageInfo->GetDamage(), aurEff->GetAmount(), aurEff);
+        {
+            int32 percent = aurEff->GetAmount();
+            if (IsTwoHanded(caster))
+                if (AuraEffect const* bonus = aurEff->GetBase()->GetEffect(EFFECT_1))
+                    percent += bonus->GetAmount();
+
+            CastShare(caster, SPELL_REACH_STRIKE, best, damageInfo->GetDamage(), percent, aurEff);
+        }
     }
 
     void Register() override
     {
-        DoCheckProc += AuraCheckProcFn(spell_blessings_survival_reach_of_the_spear::CheckProc);
         OnEffectProc += AuraEffectProcFn(spell_blessings_survival_reach_of_the_spear::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
     }
 };
 
-// Flurry of Talons: the proc trigger casts the stacking haste buff by itself; this only lets it through while a weapon is wielded in each hand.
+// Flurry of Talons: the proc trigger casts the stacking haste buff by itself (any weapon); while a weapon is wielded in each hand this adds a second stack after the default action.
 class spell_blessings_survival_flurry_of_talons : public AuraScript
 {
     PrepareAuraScript(spell_blessings_survival_flurry_of_talons);
 
-    bool CheckProc(ProcEventInfo& /*eventInfo*/)
+    void HandleAfterProc(ProcEventInfo& /*eventInfo*/)
     {
-        return IsDualWielding(GetTarget());
+        Unit* caster = GetTarget();
+        if (caster->IsAlive() && IsDualWielding(caster))
+            caster->CastSpell(caster, GetSpellInfo()->Id + 1, true);
     }
 
     void Register() override
     {
-        DoCheckProc += AuraCheckProcFn(spell_blessings_survival_flurry_of_talons::CheckProc);
+        AfterProc += AuraProcFn(spell_blessings_survival_flurry_of_talons::HandleAfterProc);
     }
 };
 
@@ -388,15 +403,11 @@ class spell_blessings_survival_skewer_barbs : public AuraScript
     }
 };
 
-// Whirling Blades: effect 0 holds the percent of the first Counterattack hit that the second one deals. Raptor Strike and Mongoose Bite get an off-hand weapon hit instead.
+// Whirling Blades: effect 0 holds the percent of the first Counterattack hit that the second one deals. Raptor Strike and Mongoose Bite get an off-hand weapon hit instead with a weapon in
+// each hand, and a main-hand weapon hit for half the weapon damage with any other weapon. Works with any weapon.
 class spell_blessings_survival_whirling_blades : public AuraScript
 {
     PrepareAuraScript(spell_blessings_survival_whirling_blades);
-
-    bool CheckProc(ProcEventInfo& /*eventInfo*/)
-    {
-        return IsDualWielding(GetTarget());
-    }
 
     void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
     {
@@ -414,12 +425,11 @@ class spell_blessings_survival_whirling_blades : public AuraScript
                 CastShare(caster, SPELL_WHIRLING_ECHO, victim, damageInfo->GetDamage(), aurEff->GetAmount(), aurEff);
         }
         else
-            caster->CastSpell(victim, SPELL_WHIRLING_OFFHAND, true, nullptr, aurEff);
+            caster->CastSpell(victim, IsDualWielding(caster) ? SPELL_WHIRLING_OFFHAND : SPELL_WHIRLING_MAINHAND, true, nullptr, aurEff);
     }
 
     void Register() override
     {
-        DoCheckProc += AuraCheckProcFn(spell_blessings_survival_whirling_blades::CheckProc);
         OnEffectProc += AuraEffectProcFn(spell_blessings_survival_whirling_blades::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
     }
 };
@@ -470,16 +480,11 @@ class spell_blessings_survival_blade_storm : public AuraScript
     }
 };
 
-// Impaling Spear: only critical Raptor Strikes reach here (spell_proc), once per 20 sec (the Cooldown of the spell_proc row); the weapon is checked first so that a hit without a
-// two-handed weapon does not start the cooldown. The stun and the vulnerability are two spells because they last 2 and 8 seconds.
+// Impaling Spear: only critical Raptor Strikes reach here (spell_proc), once per 20 sec (the Cooldown of the spell_proc row). Works with any weapon; a two-handed weapon puts the stronger
+// 15% mark instead of the 10% one. The stun and the vulnerability are two spells because they last 2 and 8 seconds.
 class spell_blessings_survival_impaling_spear : public AuraScript
 {
     PrepareAuraScript(spell_blessings_survival_impaling_spear);
-
-    bool CheckProc(ProcEventInfo& /*eventInfo*/)
-    {
-        return IsTwoHanded(GetTarget());
-    }
 
     void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
     {
@@ -490,12 +495,11 @@ class spell_blessings_survival_impaling_spear : public AuraScript
 
         Unit* caster = GetTarget();
         caster->CastSpell(victim, SPELL_IMPALING_STUN, true);
-        caster->CastSpell(victim, SPELL_IMPALING_MARK, true);
+        caster->CastSpell(victim, IsTwoHanded(caster) ? SPELL_IMPALING_MARK_2H : SPELL_IMPALING_MARK, true);
     }
 
     void Register() override
     {
-        DoCheckProc += AuraCheckProcFn(spell_blessings_survival_impaling_spear::CheckProc);
         OnEffectProc += AuraEffectProcFn(spell_blessings_survival_impaling_spear::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
     }
 };
@@ -755,6 +759,106 @@ class spell_blessings_survival_lone_wolf : public AuraScript
     }
 };
 
+// Flanking Strike (the castable): the hunter's hit is the spell's own weapon damage effect. Each hit gives the hunter one stack of the Flanked buff; when the cast ends the hunter's pet, if it is
+// alive and within FLANKING_PET_RANGE yards of the target, strikes it as well (the same moment: the cast is instant).
+class spell_blessings_survival_flanking_strike : public SpellScript
+{
+    PrepareSpellScript(spell_blessings_survival_flanking_strike);
+
+    void HandleHit()
+    {
+        Unit* caster = GetCaster();
+        if (caster && GetHitUnit())
+            caster->CastSpell(caster, SPELL_FLANKING_BUFF, true);
+    }
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        Unit* target = GetExplTargetUnit();
+        if (!player || !target || !target->IsAlive())
+            return;
+
+        Pet* pet = player->GetPet();
+        if (pet && pet->IsAlive() && pet->IsWithinDist(target, FLANKING_PET_RANGE))
+            pet->CastSpell(target, SPELL_FLANKING_PET_HIT, true);
+    }
+
+    void Register() override
+    {
+        OnHit += SpellHitFn(spell_blessings_survival_flanking_strike::HandleHit);
+        AfterCast += SpellCastFn(spell_blessings_survival_flanking_strike::HandleAfterCast);
+    }
+};
+
+// Flanking Strike, the reset: the Raptor Strike proc (chance 50% in the spell_proc row) clears the cooldown of the castable.
+class spell_blessings_survival_flanking_reset : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_survival_flanking_reset);
+
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& /*eventInfo*/)
+    {
+        PreventDefaultAction();
+        if (Player* player = GetTarget()->ToPlayer())
+            player->RemoveSpellCooldown(SPELL_FLANKING_STRIKE, true);
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_survival_flanking_reset::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
+// Cobra Slayer: the spell_proc row lets every melee hit, critical hit and dodge through; the roll is here. Mongoose Bite itself is excluded (its class bit 0x2 without Raptor Strike's bit of word 2).
+// The chance starts at effect 0 (10%) and rises by effect 1 (10%) with every attack that does not trigger it; a dodged attack always triggers. The count lives in this aura instance (it is
+// lost when the aura is removed). The free Bite is the top rank of Mongoose Bite with its damage raised by effect 2 (45%) of the hunter's attack power; it is a triggered cast, so it starts no cooldown.
+class spell_blessings_survival_cobra_slayer : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_survival_cobra_slayer);
+
+    bool CheckProc(ProcEventInfo& eventInfo)
+    {
+        SpellInfo const* spell = eventInfo.GetSpellInfo();
+        if (spell && (spell->SpellFamilyFlags[0] & FLAGS0_RAPTOR_OR_MONGOOSE) && !(spell->SpellFamilyFlags[2] & FLAGS2_RAPTOR_STRIKE))
+            return false;
+
+        Unit* victim = eventInfo.GetActionTarget();
+        return victim && victim->IsAlive();
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+        Unit* caster = GetTarget();
+        Unit* victim = eventInfo.GetActionTarget();
+        AuraEffect const* step = GetEffect(EFFECT_1);
+        AuraEffect const* bonus = GetEffect(EFFECT_2);
+        SpellInfo const* bite = sSpellMgr->GetSpellInfo(SPELL_MONGOOSE_BITE);
+        if (!victim || !step || !bonus || !bite)
+            return;
+
+        bool const dodged = (eventInfo.GetHitMask() & PROC_HIT_DODGE) != 0;
+        int32 const chance = std::min<int32>(100, aurEff->GetAmount() + int32(_misses) * step->GetAmount());
+        if (!dodged && !roll_chance_i(chance))
+        {
+            ++_misses;
+            return;
+        }
+
+        _misses = 0;
+        int32 const damage = bite->Effects[EFFECT_0].CalcValue(caster) + int32(CalculatePct(caster->GetTotalAttackPowerValue(BASE_ATTACK), bonus->GetAmount()));
+        caster->CastCustomSpell(SPELL_MONGOOSE_BITE, SPELLVALUE_BASE_POINT0, damage - 1, victim, true, nullptr, aurEff);
+    }
+
+    void Register() override
+    {
+        DoCheckProc += AuraCheckProcFn(spell_blessings_survival_cobra_slayer::CheckProc);
+        OnEffectProc += AuraEffectProcFn(spell_blessings_survival_cobra_slayer::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+
+    uint32 _misses = 0;
+};
+
 // The damage hooks of two Favors. Both are cheap when the attacker is not a hunter with the Favor: a player test and one aura lookup.
 //  * Greatspear: the stance's strike percent (effect 1) is also added to the melee auto attacks (the spell modifiers of the stance cover the abilities).
 //  * Snaremaster: Raptor Strike, Mongoose Bite, Counterattack and the melee auto attacks deal the Favor's percent (effect 1) more to an enemy the hunter has slowed or rooted.
@@ -782,7 +886,7 @@ public:
         if (!target || !attacker || damage <= 0 || !spellInfo || !attacker->IsPlayer() || spellInfo->SpellFamilyName != SPELLFAMILY_HUNTER)
             return;
 
-        if (!(spellInfo->SpellFamilyFlags[0] & FLAGS0_RAPTOR_OR_MONGOOSE) && !(spellInfo->SpellFamilyFlags[1] & FLAGS1_COUNTERATTACK))
+        if (!(spellInfo->SpellFamilyFlags[0] & FLAGS0_RAPTOR_OR_MONGOOSE) && !(spellInfo->SpellFamilyFlags[1] & FLAGS1_COUNTERATTACK) && spellInfo->Id != SPELL_FLANKING_STRIKE)
             return;
 
         if (AuraEffect const* favor = attacker->GetAuraEffect(SPELL_FAVOR_SNAREMASTER, EFFECT_1))
@@ -808,5 +912,8 @@ void AddMoonlitBlessingsSurvivalScripts()
     RegisterSpellScript(spell_blessings_survival_expose_prey);
     RegisterSpellScript(spell_blessings_survival_predators_edge);
     RegisterSpellScript(spell_blessings_survival_lone_wolf);
+    RegisterSpellScript(spell_blessings_survival_flanking_strike);
+    RegisterSpellScript(spell_blessings_survival_flanking_reset);
+    RegisterSpellScript(spell_blessings_survival_cobra_slayer);
     new MoonlitSurvivalDamageScript();
 }

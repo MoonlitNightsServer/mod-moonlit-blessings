@@ -9,6 +9,8 @@
 //   spell_blessings_arcane_tempest         Boon: every third missile also hits a second enemy
 //   spell_blessings_arcane_singularity     Boon: critical strikes extend Arcane Power
 //   spell_blessings_arcane_power_cost      bound to Arcane Power (12042): Mana Singularity removes its extra mana cost
+//   spell_blessings_arcane_missile_storm   Favor of the Missile Storm: teaches the copy of Arcane Missiles (no move interrupt) of the player's rank, swaps it on level-up, removes it on drop
+//   MoonlitArcaneStormPlayerScript         the level-up half of the Favor of the Missile Storm
 //
 // Spell ids come from the Arcane registry block 1,410,000; tools/talents/recipes/arcane.py asserts every unit named here (IDS). ~Moonlit Nights Team
 
@@ -24,6 +26,7 @@
 #include "SpellMgr.h"
 #include "SpellScript.h"
 #include "SpellScriptLoader.h"
+#include <algorithm>
 #include <list>
 
 namespace
@@ -40,9 +43,15 @@ namespace
         SPELL_OVERCHARGE           = 1410101,   // the stack buff
         SPELL_OVERCHARGED          = 1410102,   // the unload bonus: a direct-damage spell modifier on every Mage spell (effect 0 = damage percent), ended by the Favor's script
 
+        SPELL_FAVOR_MISSILE_STORM  = 1410090,   // Favor of the Missile Storm; 1410091 .. 1410098 are its copies of Arcane Missiles rank 1 .. 8 (no move interrupt)
+
         // stock spell
         SPELL_ARCANE_POWER         = 12042
     };
+
+    constexpr uint32 STORM_RANKS[8] = { 1410091, 1410092, 1410093, 1410094, 1410095, 1410096, 1410097, 1410098 };    // Arcane Missiles rank 1 .. 8; their spell level is the stock rank's
+    // every rank of the spell book's Arcane Missiles (the Lua system removes them while the Favor is chosen); the action bars are moved from them to the copy
+    constexpr uint32 STOCK_MISSILES[13] = { 5143, 5144, 5145, 8416, 8417, 10211, 10212, 25345, 27075, 38699, 38704, 42843, 42846 };
 
     constexpr int32 OVERCHARGE_BASE_CAP = 10;                 // the Favor unloads at this many stacks (Arcane Cascade raises it)
     constexpr int32 OVERCHARGE_BASE_SECONDS = 10;             // how long the stacks last, refreshed by every stack gained
@@ -77,6 +86,46 @@ namespace
         }
 
         return false;
+    }
+
+    // Favor of the Missile Storm: the player keeps exactly one copy of Arcane Missiles, the highest rank whose spell level the player has reached (the lowest below rank 1).
+    // Action bar buttons that held the spell book's ranks or another copy are moved to it, so the bar survives the swap. No-op when nothing changes.
+    void SyncMissileStormRank(Player* player)
+    {
+        uint32 wanted = STORM_RANKS[0];
+        for (uint32 const rank : STORM_RANKS)
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(rank);
+            if (info && info->SpellLevel <= player->GetLevel())
+                wanted = rank;
+        }
+
+        bool changed = false;
+        if (!player->HasSpell(wanted))
+        {
+            player->learnSpell(wanted);
+            changed = true;
+        }
+
+        for (uint8 slot = 0; slot < MAX_ACTION_BUTTONS; ++slot)
+        {
+            ActionButton const* button = player->GetActionButton(slot);
+            if (!button || button->GetType() != ACTION_BUTTON_SPELL || button->GetAction() == wanted)
+                continue;
+
+            uint32 const action = button->GetAction();
+            bool old = std::find(std::begin(STORM_RANKS), std::end(STORM_RANKS), action) != std::end(STORM_RANKS)
+                || std::find(std::begin(STOCK_MISSILES), std::end(STOCK_MISSILES), action) != std::end(STOCK_MISSILES);
+            if (old && player->addActionButton(slot, wanted, ACTION_BUTTON_SPELL))
+                changed = true;
+        }
+
+        for (uint32 const rank : STORM_RANKS)
+            if (rank != wanted && player->HasSpell(rank))
+                player->removeSpell(rank, SPEC_MASK_ALL, false);
+
+        if (changed)
+            player->SendInitialActionButtons();
     }
 
     // The nearest enemy of `seeker` within `range` yards of `center` other than `center` itself that `center` can see; null when there is none.
@@ -511,6 +560,49 @@ class spell_blessings_arcane_power_cost : public AuraScript
     }
 };
 
+// Favor of the Missile Storm: the copies of Arcane Missiles have no move interrupt (recipes/arcane.py). The Favor teaches the copy of the player's rank when it is applied (login included:
+// the learned spell is saved with the character, so this is a no-op then) and takes them away when it is dropped, but not when the player merely logs out. The level-up half is
+// MoonlitArcaneStormPlayerScript. The Lua system removes the spell book's ranks (blessing_spells.FAVOR_REMOVES).
+class spell_blessings_arcane_missile_storm : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_arcane_missile_storm);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            SyncMissileStormRank(player);
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player || !player->GetSession() || player->GetSession()->PlayerLogout())
+            return;
+
+        for (uint32 const rank : STORM_RANKS)
+            player->removeSpell(rank, SPEC_MASK_ALL, false);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_blessings_arcane_missile_storm::HandleApply, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_blessings_arcane_missile_storm::HandleRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// Level-up half of the Favor of the Missile Storm: a new rank of Arcane Missiles replaces the copy the player holds.
+class MoonlitArcaneStormPlayerScript : public PlayerScript
+{
+public:
+    MoonlitArcaneStormPlayerScript() : PlayerScript("MoonlitArcaneStormPlayerScript", { PLAYERHOOK_ON_LEVEL_CHANGED }) { }
+
+    void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override
+    {
+        if (player && player->getClass() == CLASS_MAGE && player->HasAura(SPELL_FAVOR_MISSILE_STORM))
+            SyncMissileStormRank(player);
+    }
+};
+
 void AddMoonlitBlessingsArcaneScripts()
 {
     RegisterSpellScript(spell_blessings_arcane_overcharge);
@@ -520,4 +612,6 @@ void AddMoonlitBlessingsArcaneScripts()
     RegisterSpellScript(spell_blessings_arcane_tempest);
     RegisterSpellScript(spell_blessings_arcane_singularity);
     RegisterSpellScript(spell_blessings_arcane_power_cost);
+    RegisterSpellScript(spell_blessings_arcane_missile_storm);
+    new MoonlitArcaneStormPlayerScript();
 }

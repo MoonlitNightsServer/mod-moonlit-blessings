@@ -8,6 +8,7 @@
 //   spell_blessings_protection_citadel_of_light    Boon: a block adds a damage-reduction stack, the next hit that is not blocked clears them
 //   spell_blessings_protection_mantle_of_the_aegis Boon: every 6 sec an absorb for the Paladin and the group members who hold one of his auras
 //   spell_blessings_protection_warding_aura        Favor: every 2 sec a 5% damage-reduction buff for the Paladin and the group members who hold one of his auras
+//   spell_blessings_protection_righteous_fury      bound to the Righteous Fury stance (1540010): applies and removes the hidden +50% armour helper with the stance
 //
 // A passive's helper spell id (the bolt, buff or link a script casts) is read from the TriggerSpell column of one of its effects, never hard-coded; the one exception is
 // Righteous Zeal (the script lives on stock spells and cannot name it), asserted in the recipe. ~Moonlit Nights Team
@@ -271,8 +272,33 @@ class spell_blessings_protection_warding_aura : public AuraScript
     }
 };
 
+// Righteous Fury: the tank stance. Effect 0 is the +60% threat aura; its TriggerSpell column names the hidden armour helper, which lives exactly as long as the stance (a spell has three effects only: threat,
+// the damage-taken effect that Improved Righteous Fury modifies, and the critical immunity). The helper is not saved with the character; this script puts it back when the stance is loaded at login.
+class spell_blessings_protection_righteous_fury : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_protection_righteous_fury);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* paladin = GetTarget();
+        paladin->CastSpell(paladin, GetSpellInfo()->Effects[EFFECT_0].TriggerSpell, true);
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        GetTarget()->RemoveAurasDueToSpell(GetSpellInfo()->Effects[EFFECT_0].TriggerSpell);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_blessings_protection_righteous_fury::HandleApply, EFFECT_0, SPELL_AURA_MOD_THREAT, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_blessings_protection_righteous_fury::HandleRemove, EFFECT_0, SPELL_AURA_MOD_THREAT, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 void AddMoonlitBlessingsProtectionScripts()
 {
+    RegisterSpellScript(spell_blessings_protection_righteous_fury);
     RegisterSpellScript(spell_blessings_protection_radiant_rebuke);
     RegisterSpellScript(spell_blessings_protection_righteous_zeal);
     RegisterSpellScript(spell_blessings_protection_thorned_aura);

@@ -6,7 +6,7 @@
 //   spell_blessings_feral_companion_might   the companion's attack power: a share of the druid's melee attack power (the stock pet scaling reads the RANGED attack power, which a cat has none of)
 //   MoonlitFeralPlayerScript                answers the core's "is this player a hunter, for pet purposes?" for a druid who knows Call of the Pack (no core change)
 //   MoonlitFeralUnitScript                  Hunter's Opening and Favor of the Ambusher (Pounce's bleed), Night Hunter and Ambusher (the window after Prowl), Bloodbath (the jump
-//                                           of the strongest bleed), and a repair of the stock Leader of the Pack (see the note at the shapeshift hook)
+//                                           of the strongest bleed)
 //
 // Spell ids come from the Feral registry block 1,220,000 (units are listed at the top of tools/talents/recipes/feral.py: the enum below must match them, and the recipe asserts every id
 // and class bit named here) and the Druid kit ids 1,240,040 / 1,240,041. All state lives in auras (GUIDs and spell ids only): nothing is kept between hooks.
@@ -46,8 +46,7 @@ namespace
         SPELL_CALL_OF_THE_PACK     = 1240040,   // the Call Pet that works in Cat Form; knowing it makes a druid a pet owner (MoonlitFeralPlayerScript)
         SPELL_YOUNG_COMPANION      = 1240041,   // creates the first companion (a Young Nightsaber)
 
-        SPELL_LEADER_OF_THE_PACK        = 24932,    // the stock aura (raid area aura, Cat and Bear Form)
-        SPELL_LEADER_OF_THE_PACK_TALENT = 17007,    // the stock talent spell the Feral kit teaches
+        // (the repair that casts the stock Leader of the Pack 24932 for a druid who was taught the talent spell 17007 lives in MoonlitBlessings.cpp, MoonlitDruidSharedScript: shared with the Guardian)
         SPELL_LEADER_HEAL               = 34299,    // the stock healing of Improved Leader of the Pack (the core gives it a 6 sec cooldown on the one who is healed)
 
         SPELL_TAME_BEAST           = 1515,
@@ -381,7 +380,7 @@ class MoonlitFeralUnitScript : public UnitScript
 {
 public:
     MoonlitFeralUnitScript() : UnitScript("MoonlitFeralUnitScript", true,
-        { UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK, UNITHOOK_ON_AURA_REMOVE, UNITHOOK_ON_DAMAGE, UNITHOOK_ON_UNIT_SET_SHAPESHIFT_FORM }) { }
+        { UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK, UNITHOOK_ON_AURA_REMOVE, UNITHOOK_ON_DAMAGE }) { }
 
     // Hunter's Opening and Favor of the Ambusher: Pounce's damage is its bleed (Pounce Bleed, family 0 without a class bit), which no spell modifier can reach, so every tick of it is raised here
     // by the two percentages (30 and 60, added). Runs on every damage over time tick, so everything is rejected on the first mismatch.
@@ -462,28 +461,6 @@ public:
             Unit* corpse = victim;
             corpse->m_Events.AddEventAtOffset([corpse, jump]() { JumpBleed(corpse, jump); }, std::chrono::milliseconds(EVENT_DELAY_MS));
         }
-    }
-
-    // A repair for the Feral kit: the core casts Leader of the Pack (24932) on a shapeshift only for a druid who has the TALENT (Player::HasTalent(17007)), but the Blessings system teaches the
-    // talent spell as an ordinary spell (Player::learnSpell), which the core does not count as a talent, so the aura was never cast. For a druid who knows spell 17007 without having the talent,
-    // this casts it when he takes Cat Form, Bear Form or Dire Bear Form (the core removes it again when the form goes). It does nothing for a real talent, so the core's own cast is never doubled.
-    void OnUnitSetShapeshiftForm(Unit* unit, uint8 form) override
-    {
-        if ((form != FORM_CAT && form != FORM_BEAR && form != FORM_DIREBEAR) || !unit || !unit->IsPlayer())
-            return;
-
-        Player* player = unit->ToPlayer();
-        if (player->getClass() != CLASS_DRUID || !player->HasSpell(SPELL_LEADER_OF_THE_PACK_TALENT) || player->HasTalent(SPELL_LEADER_OF_THE_PACK_TALENT, player->GetActiveSpec()))
-            return;
-
-        player->m_Events.AddEventAtOffset([player]()
-        {
-            ShapeshiftForm const now = player->GetShapeshiftForm();
-            if (!player->IsInWorld() || !player->IsAlive() || (now != FORM_CAT && now != FORM_BEAR && now != FORM_DIREBEAR) || player->HasAura(SPELL_LEADER_OF_THE_PACK))
-                return;
-
-            player->CastSpell(player, SPELL_LEADER_OF_THE_PACK, true);
-        }, std::chrono::milliseconds(EVENT_DELAY_MS));
     }
 };
 

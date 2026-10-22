@@ -185,11 +185,13 @@ class spell_blessings_titans_maul : public AuraScript
 
     void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
     {
-        if (Player* player = GetTarget()->ToPlayer())
-        {
-            player->SetCanTitanGrip(false);
-            player->AutoUnequipOffhandIfNeed();
-        }
+        Player* player = GetTarget()->ToPlayer();
+        // not while the player logs out: the aura goes with the session, and unequipping the off hand then can drop the shield into a full bag (or lose it)
+        if (!player || !player->GetSession() || player->GetSession()->PlayerLogout())
+            return;
+
+        player->SetCanTitanGrip(false);
+        player->AutoUnequipOffhandIfNeed();
     }
 
     void Register() override

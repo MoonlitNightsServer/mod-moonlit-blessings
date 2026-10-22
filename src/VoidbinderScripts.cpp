@@ -15,8 +15,11 @@
 //   spell_voidbinder_barbed_lash          Barbed Lash: Cruel Lash strikes one more enemy near your target
 //   MoonlitVoidbinderUnitScript           Boss Hunter (more damage to bosses and elites) and Thorned Veil (less damage from the veiled enemies)
 //
-//   Favors
-//   spell_voidbinder_form                 the three demon forms: teaches the form's abilities, keeps the model on you and dismisses any demon (see the recipe for the whole picture)
+//   Favors (the three demon forms; see the recipe for the whole picture)
+//   spell_voidbinder_favor                the hidden Favor aura: teaches the form spell and the form's abilities, takes them away again when the Favor is dropped
+//   spell_voidbinder_form_toggle          the form spell when it is CAST: casting it while the form is up ends the form (cast again = leave)
+//   spell_voidbinder_form                 the form aura: keeps the model and the bonus helpers on you, dismisses any demon, ends the other forms (a 1 second tick, so a login is repaired)
+//   spell_voidbinder_no_summon_in_form    bound to the stock demon summons and Enslave Demon: they fail while a form is up
 //
 // Spell ids come from the Voidbinder kit block 1,940,000 and recipe block 1,940,100; tools/talents/recipes/voidbinder.py asserts every unit named here.
 // A helper spell's id is read from the TriggerSpell column of the passive's dummy effect where there is one, otherwise it is the unit's id + n as the constants say.
@@ -55,9 +58,9 @@ namespace
         SPELL_ALPHA_HUNT        = 1940230,   // the passive; the mark on the enemy is +1
         SPELL_HEART_OF_THE_VOID = 1940250,   // effect 2 (dummy) names the attribution heal
         SPELL_DEVOURING_HUNGER  = 1940170,   // effect 0 = percent of the maximum health healed
-        SPELL_FORM_FELHOUND     = 1940260,   // form aura; +1 model, +2 Void Bite, +3 Devour Essence, +4 Spell Seal
-        SPELL_FORM_SUCCUBUS     = 1940270,   // form aura; +1 Succubus model, +2 male stand-in model, +3 Barbed Lash, +4 Allure, +5 Gloaming Veil
-        SPELL_FORM_VOIDWALKER   = 1940280    // form aura; +1 model
+        SPELL_FAVOR_FELHOUND    = 1940260,   // the Favor aura (hidden, teaches); +1 model, +2 Void Bite, +3 Devour Essence, +4 Spell Seal, +7 the FORM (castable and aura), +8 bonus helper
+        SPELL_FAVOR_SUCCUBUS    = 1940270,   // +1 Succubus model, +2 male stand-in model, +3 Barbed Lash, +4 Allure, +5 Gloaming Veil, +6 the FORM, +7 bonus helper
+        SPELL_FAVOR_VOIDWALKER  = 1940280    // +1 model, +3 the FORM, +4 and +5 bonus helpers (+2 is retired)
     };
 
     constexpr int32 DARK_CRADLE_HEALTH_PCT = 35;
@@ -142,18 +145,59 @@ namespace
             player->RemovePet(nullptr, PET_SAVE_NOT_IN_SLOT);
     }
 
-    // The spells a form teaches (castable abilities; the model helper is not one of them).
-    std::vector<uint32> FormAbilities(uint32 formId)
+    // One demon form: the Favor aura that teaches it, the form itself (the castable AND the visible aura), the model helper (and the one a male warlock wears; 0: the same), up to two helpers that
+    // carry the form's own bonuses, and the abilities the Favor teaches (castable only in the form: their CasterAuraSpell is the form).
+    struct FormDef
     {
-        switch (formId)
-        {
-            case SPELL_FORM_FELHOUND:
-                return { SPELL_FORM_FELHOUND + 2, SPELL_FORM_FELHOUND + 3, SPELL_FORM_FELHOUND + 4 };      // Void Bite, Devour Essence, Spell Seal
-            case SPELL_FORM_SUCCUBUS:
-                return { SPELL_FORM_SUCCUBUS + 3, SPELL_FORM_SUCCUBUS + 4, SPELL_FORM_SUCCUBUS + 5 };      // Barbed Lash, Allure, Gloaming Veil
-            default:
-                return { };
-        }
+        uint32 favor;
+        uint32 form;
+        uint32 model;
+        uint32 maleModel;
+        uint32 helpers[2];
+        uint32 abilities[3];
+    };
+
+    constexpr FormDef FORMS[] =
+    {
+        { SPELL_FAVOR_FELHOUND,   SPELL_FAVOR_FELHOUND + 7,   SPELL_FAVOR_FELHOUND + 1,   0,                        { SPELL_FAVOR_FELHOUND + 8, 0 },                       { SPELL_FAVOR_FELHOUND + 2, SPELL_FAVOR_FELHOUND + 3, SPELL_FAVOR_FELHOUND + 4 } },
+        { SPELL_FAVOR_SUCCUBUS,   SPELL_FAVOR_SUCCUBUS + 6,   SPELL_FAVOR_SUCCUBUS + 1,   SPELL_FAVOR_SUCCUBUS + 2, { SPELL_FAVOR_SUCCUBUS + 7, 0 },                       { SPELL_FAVOR_SUCCUBUS + 3, SPELL_FAVOR_SUCCUBUS + 4, SPELL_FAVOR_SUCCUBUS + 5 } },
+        { SPELL_FAVOR_VOIDWALKER, SPELL_FAVOR_VOIDWALKER + 3, SPELL_FAVOR_VOIDWALKER + 1, 0,                        { SPELL_FAVOR_VOIDWALKER + 4, SPELL_FAVOR_VOIDWALKER + 5 }, { 0, 0, 0 } }
+    };
+
+    FormDef const* FormOfFavor(uint32 favorId)
+    {
+        for (FormDef const& def : FORMS)
+            if (def.favor == favorId)
+                return &def;
+
+        return nullptr;
+    }
+
+    FormDef const* FormOfAura(uint32 formId)
+    {
+        for (FormDef const& def : FORMS)
+            if (def.form == formId)
+                return &def;
+
+        return nullptr;
+    }
+
+    bool InAnyForm(Unit const* unit)
+    {
+        if (unit)
+            for (FormDef const& def : FORMS)
+                if (unit->HasAura(def.form))
+                    return true;
+
+        return false;
+    }
+
+    // A demon the warlock controls by Enslave Demon is released (GetPet() does not return it).
+    void ReleaseEnslavedDemon(Player* player)
+    {
+        Unit* charm = player->GetCharm();
+        if (charm && charm->GetCreatureType() == CREATURE_TYPE_DEMON)
+            player->StopCastingCharm();
     }
 }
 
@@ -501,26 +545,93 @@ class spell_voidbinder_barbed_lash : public SpellScript
     }
 };
 
-// The three forms (the hidden aura of each Favor). Effect 0 is a one second periodic dummy whose TriggerSpell is the model helper (a Transform aura); the Succubus Form of a male warlock uses the
-// stand-in helper two spell ids higher. Applying the aura teaches the form's abilities; dropping the Favor takes them away again (not when the player merely logs out) and the model with them.
-// Every second the model is put back if something took it away and any demon is dismissed: a demon restored at login is therefore gone within a second.
+// The Favor of a demon form: a hidden aura whose dummy effect only TEACHES. Applying it learns the form spell and the form's abilities; dropping the Favor ends the form and takes the spells away
+// again (not when the player merely logs out). Nothing is switched on here: the form is a spell the warlock casts (the way Fire's Cauterizer teaches its spells).
+class spell_voidbinder_favor : public AuraScript
+{
+    PrepareAuraScript(spell_voidbinder_favor);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        FormDef const* def = FormOfFavor(GetId());
+        if (!player || !def)
+            return;
+
+        player->learnSpell(def->form);
+        for (uint32 const spellId : def->abilities)
+            if (spellId)
+                player->learnSpell(spellId);
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        FormDef const* def = FormOfFavor(GetId());
+        if (!player || !def || !player->GetSession() || player->GetSession()->PlayerLogout())
+            return;
+
+        player->RemoveAurasDueToSpell(def->form);
+        player->removeSpell(def->form, SPEC_MASK_ALL, false);
+        for (uint32 const spellId : def->abilities)
+            if (spellId)
+                player->removeSpell(spellId, SPEC_MASK_ALL, false);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_voidbinder_favor::HandleApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_voidbinder_favor::HandleRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// The form spell as a CAST: it is a toggle. Casting it while its aura is up ends the form and fails the cast without a message (no cost, no cooldown); casting it otherwise puts the aura on.
+class spell_voidbinder_form_toggle : public SpellScript
+{
+    PrepareSpellScript(spell_voidbinder_form_toggle);
+
+    SpellCastResult CheckToggle()
+    {
+        Unit* caster = GetCaster();
+        uint32 const form = GetSpellInfo()->Id;
+        if (!caster || !caster->HasAura(form))
+            return SPELL_CAST_OK;
+
+        caster->RemoveAurasDueToSpell(form);
+        return SPELL_FAILED_DONT_REPORT;
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_voidbinder_form_toggle::CheckToggle);
+    }
+};
+
+// The form aura itself. Effect 0 is a one second periodic dummy (effect 1 is the melee critical immunity and effect 2 the +60% threat: the tank baseline lives in the data). The model helper (a
+// Transform; the stand-in model for a male Succubus) and the bonus helpers are passive, so they are not saved at logout: this script puts them on at once when the form is cast and again every
+// second, which also repairs a login (the form aura is saved, and is applied before the player is in the world). A demon that is out is dismissed (a pet restored at login goes within a second).
+// Forms end each other. When the form ends the helpers go with it.
 class spell_voidbinder_form : public AuraScript
 {
     PrepareAuraScript(spell_voidbinder_form);
 
-    uint32 ModelSpell(Player const* player) const
+    static uint32 ModelSpell(FormDef const& def, Player const* player)
     {
-        if (GetId() == SPELL_FORM_SUCCUBUS && player->getGender() == GENDER_MALE)
-            return SPELL_FORM_SUCCUBUS + 2;
-
-        return GetSpellInfo()->Effects[EFFECT_0].TriggerSpell;
+        return def.maleModel && player->getGender() == GENDER_MALE ? def.maleModel : def.model;
     }
 
-    void Refresh(Player* player)
+    void Refresh(Player* player, FormDef const& def)
     {
-        uint32 const model = ModelSpell(player);
+        if (!player->IsInWorld() || !player->IsAlive())
+            return;
+
+        uint32 const model = ModelSpell(def, player);
         if (!player->HasAura(model))
             player->CastSpell(player, model, true);
+
+        for (uint32 const helper : def.helpers)
+            if (helper && !player->HasAura(helper))
+                player->CastSpell(player, helper, true);
 
         DismissDemon(player);
     }
@@ -528,34 +639,43 @@ class spell_voidbinder_form : public AuraScript
     void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
     {
         Player* player = GetTarget()->ToPlayer();
-        if (!player)
+        FormDef const* def = FormOfAura(GetId());
+        if (!player || !def)
             return;
 
-        for (uint32 const spellId : FormAbilities(GetId()))
-            player->learnSpell(spellId);
+        for (FormDef const& other : FORMS)
+            if (other.form != def->form)
+                player->RemoveAurasDueToSpell(other.form);
 
-        Refresh(player);
+        if (player->IsInWorld())
+            ReleaseEnslavedDemon(player);
+
+        Refresh(player, *def);
     }
 
     void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
     {
-        Player* player = GetTarget()->ToPlayer();
-        if (!player || !player->GetSession() || player->GetSession()->PlayerLogout())
+        Unit* target = GetTarget();
+        FormDef const* def = FormOfAura(GetId());
+        if (!def)
             return;
 
-        for (uint32 const spellId : FormAbilities(GetId()))
-            player->removeSpell(spellId, SPEC_MASK_ALL, false);
+        target->RemoveAurasDueToSpell(def->model);
+        if (def->maleModel)
+            target->RemoveAurasDueToSpell(def->maleModel);
 
-        player->RemoveAurasDueToSpell(GetSpellInfo()->Effects[EFFECT_0].TriggerSpell);
-        if (GetId() == SPELL_FORM_SUCCUBUS)
-            player->RemoveAurasDueToSpell(SPELL_FORM_SUCCUBUS + 2);
+        for (uint32 const helper : def->helpers)
+            if (helper)
+                target->RemoveAurasDueToSpell(helper);
     }
 
     void HandlePeriodic(AuraEffect const* /*aurEff*/)
     {
         PreventDefaultAction();
-        if (Player* player = GetTarget()->ToPlayer())
-            Refresh(player);
+        Player* player = GetTarget()->ToPlayer();
+        FormDef const* def = FormOfAura(GetId());
+        if (player && def)
+            Refresh(player, *def);
     }
 
     void Register() override
@@ -563,6 +683,22 @@ class spell_voidbinder_form : public AuraScript
         AfterEffectApply += AuraEffectApplyFn(spell_voidbinder_form::HandleApply, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL);
         AfterEffectRemove += AuraEffectRemoveFn(spell_voidbinder_form::HandleRemove, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL);
         OnEffectPeriodic += AuraEffectPeriodicFn(spell_voidbinder_form::HandlePeriodic, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY);
+    }
+};
+
+// Bound to the stock Summon Imp, Felhunter, Voidwalker, Succubus, Felguard and the Enslave Demon ranks: a warlock in a form has no demon at his side and cannot call or enslave one.
+class spell_voidbinder_no_summon_in_form : public SpellScript
+{
+    PrepareSpellScript(spell_voidbinder_no_summon_in_form);
+
+    SpellCastResult CheckForm()
+    {
+        return InAnyForm(GetCaster()) ? SPELL_FAILED_NOT_SHAPESHIFT : SPELL_CAST_OK;
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_voidbinder_no_summon_in_form::CheckForm);
     }
 };
 
@@ -626,6 +762,9 @@ void AddMoonlitBlessingsVoidbinderScripts()
     RegisterSpellScript(spell_voidbinder_sirens_reign_reflect);
     RegisterSpellScript(spell_voidbinder_devour_essence);
     RegisterSpellScript(spell_voidbinder_barbed_lash);
+    RegisterSpellScript(spell_voidbinder_favor);
+    RegisterSpellScript(spell_voidbinder_form_toggle);
     RegisterSpellScript(spell_voidbinder_form);
+    RegisterSpellScript(spell_voidbinder_no_summon_in_form);
     new MoonlitVoidbinderUnitScript();
 }

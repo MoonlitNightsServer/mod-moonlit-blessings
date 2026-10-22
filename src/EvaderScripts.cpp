@@ -4,6 +4,7 @@
 //   spell_ruffian_evasion          bound to the two stock Evasion ranks (5277, 26669): the "while Evasion is active / after it ends" Boons and the Favor of the Shadow Veil
 //   spell_ruffian_perfect_counter  Boon (keystone): lets only the real Riposte through the proc of the Perfect Counter debuff
 //   spell_ruffian_smoke_sweep      the kit spell Smoke Sweep: its flat threat is added WITH the threat modifiers (the core's THREAT effect ignores them)
+//   spell_ruffian_blade_dance      the kit finisher Blade Dance (1740250): sets the aura duration to 14 + 4 sec per combo point beyond the first (14 to 30 sec)
 //
 // Spell ids come from the registry block 1,740,100 (Evader). The passive ids below are asserted by the recipe (unit()); the helpers are the passive id + 1 (the window while Evasion lasts, or the tail
 // after it) and + 2 (the Favor's tail). Stock ids: Evasion 5277 and 26669, the Riposte class flag. ~Moonlit Nights Team
@@ -111,7 +112,7 @@ class spell_ruffian_perfect_counter : public AuraScript
 };
 
 // Smoke Sweep: effect 1 is a flat THREAT effect on every enemy within 8 yards. The core adds such threat with every modifier switched off (Spell::EffectThreat passes ignoreModifiers), so the threat
-// modifiers of the Boons (Choking Smoke, Hall of Mirrors, the Favor of the Smoke and Mirrors) and the Evasion Stance's +25% would not touch it. The default effect is therefore suppressed and the same
+// modifiers of the Boons (Choking Smoke, Hall of Mirrors, the Favor of the Smoke and Mirrors) and the +60% threat aura of the stance Just a Flesh Wound would not touch it. The default effect is therefore suppressed and the same
 // amount is added with the modifiers on. It is threat only: it never taunts.
 class spell_ruffian_smoke_sweep : public SpellScript
 {
@@ -135,9 +136,38 @@ class spell_ruffian_smoke_sweep : public SpellScript
     }
 };
 
+// Blade Dance: the spell data gives the parry (6% to 10%) per combo point, but the duration of a finisher scales with the base and maximum of one SpellDuration row and none has 10 to 30 sec. The aura is
+// created while the combo points are still held (the core clears them in the finish phase, after every hit), so the duration is set here from the points the rogue is spending.
+class spell_ruffian_blade_dance : public SpellScript
+{
+    PrepareSpellScript(spell_ruffian_blade_dance);
+
+    void ApplyDuration()
+    {
+        Unit* rogue = GetCaster();
+        Aura* aura = GetHitAura();
+        if (!rogue || !aura)
+            return;
+
+        uint8 const points = rogue->GetComboPoints();
+        if (!points)
+            return;
+
+        int32 const duration = (10 + 4 * int32(points)) * IN_MILLISECONDS;     // 14, 18, 22, 26, 30 sec
+        aura->SetMaxDuration(duration);
+        aura->SetDuration(duration);
+    }
+
+    void Register() override
+    {
+        AfterHit += SpellHitFn(spell_ruffian_blade_dance::ApplyDuration);
+    }
+};
+
 void AddMoonlitBlessingsEvaderScripts()
 {
     RegisterSpellScript(spell_ruffian_evasion);
     RegisterSpellScript(spell_ruffian_perfect_counter);
     RegisterSpellScript(spell_ruffian_smoke_sweep);
+    RegisterSpellScript(spell_ruffian_blade_dance);
 }

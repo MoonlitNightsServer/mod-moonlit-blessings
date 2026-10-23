@@ -341,9 +341,18 @@ class spell_runeguard_runic_corruption_tick : public AuraScript
             return;
 
         uint32 const step = uint32(std::max(aurEff->GetAmplitude(), 1));
+        bool readied = false;
         for (uint8 i = 0; i < MAX_RUNES; ++i)
             if (uint32 const cooldown = player->GetRuneCooldown(i))
-                player->SetRuneCooldown(i, cooldown > step ? cooldown - step : 0);
+            {
+                uint32 const next = cooldown > step ? cooldown - step : 0;
+                player->SetRuneCooldown(i, next);
+                readied |= (next == 0);
+            }
+
+        // the client keeps its own rune timers: the engine's early refunds (Blood Tap, Empower Rune Weapon) cast the visual spell 47804 so the client sees the rune ready
+        if (readied)
+            player->CastSpell(player, 47804, true);
     }
 
     void Register() override
@@ -576,7 +585,7 @@ class spell_runeguard_frozen_bastion : public AuraScript
             knight->CastSpell(knight, SPELL_RUNE_STRIKE_ENABLE, true);
 
         uint32 const now = NowMs();
-        _expiry.erase(std::remove_if(_expiry.begin(), _expiry.end(), [now](uint32 end) { return end <= now; }), _expiry.end());
+        _expiry.erase(std::remove_if(_expiry.begin(), _expiry.end(), [now](uint32 end) { return int32(end - now) <= 0; }), _expiry.end());
 
         Aura* plate = knight->GetAura(PlateSpell());
         if (!plate)
@@ -687,7 +696,7 @@ class spell_runeguard_bones_return : public AuraScript
     void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
     {
         if (SpellInfo const* spellInfo = eventInfo.GetSpellInfo())
-            if (spellInfo->Id == SPELL_PLAGUE_STRIKE_OFF_HAND || spellInfo->Id == SPELL_SCOURGE_STRIKE_TRIGGERED)
+            if (sSpellMgr->GetFirstSpellInChain(spellInfo->Id) == SPELL_PLAGUE_STRIKE_OFF_HAND || spellInfo->Id == SPELL_SCOURGE_STRIKE_TRIGGERED)
                 return;
 
         if (Aura* bones = GetTarget()->GetAura(SPELL_BONE_SHIELD_AURA))

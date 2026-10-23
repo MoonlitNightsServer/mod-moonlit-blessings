@@ -24,15 +24,8 @@
 //
 // Spell ids come from the Unholy blocks 1,130,000 - 1,130,249; tools/talents/recipes/unholy.py asserts every unit named here (a helper is the unit id + 1 ... as listed in its docstring).
 //
-// CORE CHANGE NEEDED (not made here, owner approved 2026-10-22): Plague Slash (1130121) must be treated as an Auto Shot by the core, exactly like Hurl. The spell is built for it (a clone of Auto Shot 75 with the
-// "uses the ranged slot" and "needs ammo" attributes taken away, no weapon requirement, damage class ranged, auto-repeat, so it is a BASE_ATTACK weapon spell: the main hand sets damage and attack power, no
-// ammo is used and the spell procs as a ranged auto attack). What the core must still do:
-//   1. SpellInfo.h: add 1130121 (and the Frost Shardcaster's icy projectile) to MOONLIT_AUTO_SHOT_SPELLS, so IsAutoShotSpell() is true for it (no start delay, does not break other casts, movement is allowed).
-//   2. Unit::_UpdateAutoRepeatSpell (Unit.cpp): for a "sheathed" auto shot (a second constexpr list next to MOONLIT_AUTO_SHOT_SPELLS), use the BASE_ATTACK timer instead of RANGED_ATTACK:
-//      isAttackReady(BASE_ATTACK), resetAttackTimer(BASE_ATTACK), and do not also reset OFF_ATTACK/RANGED_ATTACK; the repeat speed is then the main-hand weapon speed (and melee haste). Without this the
-//      RANGED_ATTACK timer of a death knight with no ranged weapon is the default 2 sec and never follows the weapon.
-//   3. The melee swing must not fire while such a spell is the current auto-repeat spell (Unit::Update / Player::Update melee branch: skip the swing if the current CURRENT_AUTOREPEAT_SPELL is a sheathed auto shot), otherwise
-//      a death knight in melee range swings AND slashes. Also Spell::CheckCast must let it start with no ranged weapon: nothing else in CheckCast looks at the ranged weapon once the two attributes are gone.
+// CORE CHANGE (made 2026-10-22, owner approved): Plague Slash (1130121) is in MOONLIT_SHEATHED_AUTO_SPELLS (SpellInfo.h): it counts as an Auto Shot, follows the main-hand swing speed (Unit::_UpdateAutoRepeatSpell)
+// and replaces the melee swing while it is the auto-repeat spell (Player update). The spell is a clone of Auto Shot 75 without the ranged-slot and ammo attributes.
 // ~Moonlit Nights Team
 
 #include "Pet.h"   // BlessingsHelpers.h needs the full Pet type (it is not included there)
@@ -139,6 +132,9 @@ namespace
     // The enemy the death knight is fighting: the selected one if it is attackable, otherwise the victim.
     Unit* FightTarget(Player* player)
     {
+        if (!player->IsInCombat())                   // a mere click on a sleeping mob must not start a fight
+            return nullptr;
+
         Unit* target = player->GetSelectedUnit();
         if (target && target->IsAlive() && player->IsValidAttackTarget(target))
             return target;
@@ -153,17 +149,20 @@ namespace
     }
 
     // A corpse a Corpse Toss can use: a dead creature within range (not a mechanical or elemental one, the rule of Corpse Explosion).
-    bool CorpseNear(Unit* seeker, float range)
+    // Not a pet, a guardian or a friend (a skeleton archer or your own ghoul is not a corpse to use).
+    Creature* FindCorpse(Unit* seeker, float range)
     {
         std::list<Unit*> units;
         Acore::AnyDeadUnitObjectInRangeCheck check(seeker, range);
         Acore::UnitListSearcher<Acore::AnyDeadUnitObjectInRangeCheck> searcher(seeker, units, check);
         Cell::VisitObjects(seeker, searcher, range);
         for (Unit* unit : units)
-            if (unit->IsCreature() && !(unit->GetCreatureTypeMask() & CREATURE_TYPEMASK_MECHANICAL_OR_ELEMENTAL))
-                return true;
+            if (Creature* corpse = unit->ToCreature())
+                if (!corpse->IsPet() && !corpse->HasUnitTypeMask(UNIT_MASK_MINION | UNIT_MASK_GUARDIAN | UNIT_MASK_SUMMON) && !corpse->IsFriendlyTo(seeker)
+                    && !(corpse->GetCreatureTypeMask() & CREATURE_TYPEMASK_MECHANICAL_OR_ELEMENTAL))
+                    return corpse;
 
-        return false;
+        return nullptr;
     }
 
     bool IsMinionMarked(Unit const* unit)
@@ -174,13 +173,21 @@ namespace
     // Dresses a creature as a Skeleton Archer and marks it: the skeleton model, a bow in the ranged slot, passive, the archer mark (shoots, cannot melee).
     void MakeArcher(Creature* archer)
     {
-        archer->SetDisplayId(SKELETON_DISPLAY);
-        archer->SetNativeDisplayId(SKELETON_DISPLAY);
+        archer->SetDisplayId(SKELETON_DISPLAY);                   // the native model stays the real one, so a pet saved while it is an archer never keeps the skeleton
         archer->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID + 2, BOW_ITEM);
         archer->SetReactState(REACT_PASSIVE);
         archer->AttackStop();
         if (!archer->HasAura(SPELL_MARK_ARCHER))
             archer->CastSpell(archer, SPELL_MARK_ARCHER, true);
+    }
+
+    // Takes the archer dress off a Raise Dead ghoul again (the Favor was dropped).
+    void UnmakeArcher(Creature* archer)
+    {
+        archer->RemoveAurasDueToSpell(SPELL_MARK_ARCHER);
+        archer->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID + 2, 0);
+        archer->SetDisplayId(archer->GetNativeDisplayId());
+        archer->SetReactState(REACT_DEFENSIVE);
     }
 
     // The ghoul lands (or appears) next to `target`, on the side of the owner, looking at it.
@@ -542,6 +549,9 @@ class spell_blessings_unholy_plague_rot : public SpellScript
 
     void HandleHit()
     {
+        if (GetHitDamage() <= 0)                     // OnHit also runs for a miss, dodge, parry or resist: then nothing is spent
+            return;
+
         Unit* caster = GetCaster();
         Unit* target = GetHitUnit();
         Aura* rot = caster && target ? target->GetAura(SPELL_FESTERING_ROT, caster->GetGUID()) : nullptr;
@@ -577,6 +587,9 @@ class spell_blessings_unholy_plague_slash : public SpellScript
 
     void HandleHit()
     {
+        if (GetHitDamage() <= 0)                     // OnHit also runs for a miss
+            return;
+
         Unit* caster = GetCaster();
         Unit* target = GetHitUnit();
         if (caster && target && target->IsAlive() && roll_chance_i(SLASH_PLAGUE_CHANCE))
@@ -646,7 +659,7 @@ class spell_blessings_unholy_tomb_necromancer : public AuraScript
         player->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
         Pet* pet = player->GetPet();
         if (pet && pet->HasAura(SPELL_MARK_ARCHER))
-            player->RemovePet(pet, PET_SAVE_NOT_IN_SLOT);          // the Skeleton Archer goes; Raise Dead brings a ghoul again
+            UnmakeArcher(pet);                                      // the Skeleton Archer becomes the plain ghoul again
     }
 
     void HandleTick(AuraEffect const* /*aurEff*/)
@@ -684,7 +697,7 @@ class spell_blessings_unholy_corpse_toss : public SpellScript
         if (!caster)
             return SPELL_FAILED_ERROR;
 
-        if (CorpseNear(caster, CORPSE_RANGE))
+        if (FindCorpse(caster, CORPSE_RANGE))
             return SPELL_CAST_OK;
 
         return int32(caster->GetPower(POWER_RUNIC_POWER)) >= CORPSE_TOSS_RUNIC_POWER ? SPELL_CAST_OK : SPELL_FAILED_NO_POWER;
@@ -697,7 +710,9 @@ class spell_blessings_unholy_corpse_toss : public SpellScript
         if (!player || !target)
             return;
 
-        if (!CorpseNear(player, CORPSE_RANGE))
+        if (Creature* corpse = FindCorpse(player, CORPSE_RANGE))
+            corpse->RemoveCorpse();                  // the corpse is used up (its loot goes with it)
+        else
         {
             if (int32(player->GetPower(POWER_RUNIC_POWER)) < CORPSE_TOSS_RUNIC_POWER)
                 return;
@@ -736,6 +751,12 @@ class spell_blessings_unholy_archer_mark : public AuraScript
                 if (!archer->IsPet())
                     summon->UnSummon();
 
+            return;
+        }
+
+        if (archer->IsPet() && !player->HasAura(SPELL_FAVOR_NECROMANCER))      // a pet saved as an archer, loaded after the Favor was dropped
+        {
+            UnmakeArcher(archer);
             return;
         }
 

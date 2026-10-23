@@ -24,9 +24,13 @@
 #include "AllSpellScript.h"
 #include "Pet.h"   // BlessingsHelpers.h needs the full Pet type (it is not included there)
 #include "BlessingsHelpers.h"
+#include "Cell.h"
+#include "CellImpl.h"
 #include "Creature.h"
 #include "CreatureAI.h"
 #include "DynamicObject.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -41,6 +45,7 @@
 #include "UnitScript.h"
 #include "WorldSession.h"
 #include <algorithm>
+#include <list>
 #include <map>
 #include <vector>
 
@@ -135,7 +140,7 @@ namespace
     Unit* FindBeast(Unit* owner)
     {
         for (Unit* controlled : owner->m_Controlled)
-            if (controlled && IsBeast(controlled))
+            if (controlled && controlled->IsAlive() && IsBeast(controlled))          // a dead beast does not count: it is called again within 2 sec
                 return controlled;
 
         return nullptr;
@@ -195,7 +200,7 @@ class spell_blessings_blood_marked_heal : public SpellScript
 
     void Register() override
     {
-        OnEffectHitTarget += SpellEffectFn(spell_blessings_blood_marked_heal::HandleHeal, EFFECT_0, SPELL_EFFECT_HEAL_PCT);
+        OnEffectLaunchTarget += SpellEffectFn(spell_blessings_blood_marked_heal::HandleHeal, EFFECT_0, SPELL_EFFECT_HEAL_PCT);   // the heal percent is read in the launch phase
     }
 };
 
@@ -379,7 +384,26 @@ class spell_blessings_blood_bladed_heart : public AuraScript
             return;
 
         Unit* knight = GetTarget();
-        Unit* other = knight->SelectNearbyTarget(victim, BLADED_HEART_RANGE);
+        // the enemy nearest to the struck one (within range of it), not under crowd control
+        std::list<Unit*> found;
+        Acore::AnyUnfriendlyUnitInObjectRangeCheck check(victim, knight, BLADED_HEART_RANGE);
+        Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(victim, found, check);
+        Cell::VisitObjects(victim, searcher, BLADED_HEART_RANGE);
+        Unit* other = nullptr;
+        float best = 1e9f;
+        for (Unit* candidate : found)
+        {
+            if (candidate == victim || !knight->IsValidAttackTarget(candidate) || candidate->HasBreakableByDamageCrowdControlAura() || !victim->IsWithinLOSInMap(candidate))
+                continue;
+
+            float const distance = victim->GetExactDist(candidate);
+            if (distance < best)
+            {
+                best = distance;
+                other = candidate;
+            }
+        }
+
         if (!other)
             return;
 

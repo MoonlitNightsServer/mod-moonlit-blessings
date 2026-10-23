@@ -359,7 +359,7 @@ class spell_blessings_dkfrost_wyrms_embrace : public AuraScript
             float bestDistance = range + 1.0f;
             for (Unit* unit : EnemiesAround(caster, source, range))
             {
-                if (unit == source || !unit->IsAlive() || unit->HasAura(SPELL_FROST_FEVER, caster->GetGUID()))
+                if (unit == source || !unit->IsAlive() || unit->HasAura(SPELL_FROST_FEVER, caster->GetGUID()) || unit->HasBreakableByDamageCrowdControlAura())
                     continue;
 
                 float const distance = source->GetDistance(unit);
@@ -512,6 +512,9 @@ private:
     static uint32 RazoricePercent(Unit* target, Unit* attacker, SpellInfo const* spellInfo)
     {
         if (!target || !attacker || !spellInfo || target == attacker || !attacker->IsPlayer() || !(spellInfo->GetSchoolMask() & SPELL_SCHOOL_MASK_FROST))
+            return 0;
+
+        if (spellInfo->Id == SPELL_RAZORICE + 1)          // the Razorice flat hit itself is exactly 4%, never raised by its own debuff
             return 0;
 
         AuraEffect const* razorice = attacker->GetAuraEffect(SPELL_RAZORICE, EFFECT_1);

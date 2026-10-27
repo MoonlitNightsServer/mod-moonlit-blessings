@@ -10,3 +10,18 @@ MoonlitBlessings.Enable = 1
 
 # Class IDs that use the Blessings system: 2 = Paladin, 5 = Priest, 7 = Shaman (comma separated)
 MoonlitBlessings.Classes = "1,2,3,4,5,6,7,8,9,11"
+
+###################################################################################################
+# Closure of the stock talent window and the stock glyph frame
+# The custom Lua talent system and glyph page (import/talent-mod) replace both. Turn these on only when the custom window works,
+# otherwise nobody can pick talents or glyphs at all.
+###################################################################################################
+
+# Close stock talent spending for every class (talent veto, empty trainers, stock talents reset once at login, free points set to 0). (1 = on, 0 = off)
+MoonlitLock.Talents.Enable = 1
+
+# Refuse stock glyph items in the native glyph frame and strip glyphs already socketed (at login and after a spec switch). (1 = on, 0 = off)
+MoonlitLock.Glyphs.Enable = 1
+
+# Glyph items with an entry at or above this number are ours (the Prime glyphs) and are not blocked until the custom glyph page carries them.
+MoonlitLock.Glyphs.CustomItemIdFrom = 1000000

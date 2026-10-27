@@ -23,5 +23,5 @@ MoonlitLock.Talents.Enable = 1
 # Refuse stock glyph items in the native glyph frame and strip glyphs already socketed (at login and after a spec switch). (1 = on, 0 = off)
 MoonlitLock.Glyphs.Enable = 1
 
-# Glyph items with an entry at or above this number are ours (the Prime glyphs) and are not blocked until the custom glyph page carries them.
-MoonlitLock.Glyphs.CustomItemIdFrom = 1000000
+# Glyph items with an entry at or above this number are not blocked. The custom glyph page now carries every glyph (the Prime glyphs are free), so none are exempt.
+MoonlitLock.Glyphs.CustomItemIdFrom = 4294967295

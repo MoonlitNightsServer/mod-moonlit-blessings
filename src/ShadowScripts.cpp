@@ -44,6 +44,14 @@ namespace
         SPELL_BOUND_FIEND_SUMMON = 1630052,   // Shadowfiend clone that never expires
         SPELL_TENTACLE_LASH      = 1630071,   // the area lash; its damage is passed in by the script
 
+        // Glyph of the Bound Fiend: the talent rewrites (first rank of each; ids run on by one per rank, see recipes/shadow.py)
+        SPELL_FIEND_DARKNESS     = 1630120,   // 5 ranks: the fiend deals 2% more damage per rank
+        SPELL_FIEND_TWISTED      = 1630130,   // 5 ranks: the fiend hits 1% harder per rank against targets with the priest's Shadow Word: Pain
+        SPELL_FIEND_VEILED       = 1630140,   // 2 ranks: the fiend is called again 2 sec sooner per rank
+        SPELL_FIEND_SPIRIT_TAP   = 1630150,   // 3 ranks: a kill by the fiend counts as the priest's own
+        SPELL_FIEND_AFFINITY     = 1630160,   // 3 ranks: the fiend generates 20% more threat per rank
+        SPELL_SPIRIT_TAP_TRIGGER = 15271,     // the stock Spirit Tap buff
+
         SPELL_MIND_BLAST_RANK_1  = 8092,
         SPELL_SHADOWFIEND_LEECH  = 28305      // the pet aura that hands mana back to the priest
     };
@@ -71,6 +79,63 @@ namespace
     constexpr float LASH_PER_LEVEL = 1.6f;                    // base damage of one lash per player level (about 60% of a Mind Sear tick; tune here)
     constexpr float TENTACLE_DISTANCE = 3.0f;                 // yards from the dot target
     constexpr uint32 TENTACLE_LIFETIME_MS = 30000;            // a tentacle that is still needed is called again when this runs out
+
+    // The rank (0 = none) of a rewritten talent the player has: the variant spells run on by one per rank.
+    uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (owner->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
+    }
+
+    bool IsBoundFiend(Unit const* unit)
+    {
+        return unit && unit->GetEntry() == NPC_SHADOWFIEND && unit->GetUInt32Value(UNIT_CREATED_BY_SPELL) == SPELL_BOUND_FIEND_SUMMON;
+    }
+
+    Unit* FindFiend(Unit* owner)
+    {
+        for (Unit* controlled : owner->m_Controlled)
+            if (controlled->GetEntry() == NPC_SHADOWFIEND && controlled->GetUInt32Value(UNIT_CREATED_BY_SPELL) == SPELL_BOUND_FIEND_SUMMON)
+                return controlled;
+
+        return nullptr;
+    }
+
+    void EnsureFiend(Unit* owner)
+    {
+        if (!owner || !owner->IsInWorld() || !owner->IsAlive())
+            return;
+
+        Unit* fiend = FindFiend(owner);
+        if (!fiend)
+        {
+            owner->CastSpell(owner, SPELL_BOUND_FIEND_SUMMON, true);
+            fiend = FindFiend(owner);
+        }
+
+        if (!fiend || !fiend->IsAlive())
+            return;
+
+        if (!fiend->HasAura(SPELL_BOUND_FIEND_BUFF))
+            fiend->CastSpell(fiend, SPELL_BOUND_FIEND_BUFF, true);
+
+        // the Glyph of the Bound Fiend's talent rewrites feed the fiend: Darkness adds damage, Shadow Affinity adds threat
+        if (Aura* buff = fiend->GetAura(SPELL_BOUND_FIEND_BUFF))
+        {
+            if (AuraEffect* damage = buff->GetEffect(EFFECT_0))
+                damage->ChangeAmount(30 + 2 * VariantRank(owner, SPELL_FIEND_DARKNESS, 5));
+            if (AuraEffect* threat = buff->GetEffect(EFFECT_1))
+                threat->ChangeAmount(20 * VariantRank(owner, SPELL_FIEND_AFFINITY, 3));
+        }
+
+        // a fiend that never leaves would hand back mana without end: the permanent one does not
+        if (fiend->HasAura(SPELL_SHADOWFIEND_LEECH))
+            fiend->RemoveAurasDueToSpell(SPELL_SHADOWFIEND_LEECH);
+    }
+
 
     // Remove every cooldown of the spell's category (and the spell itself) so that the spell is ready again.
     void ResetCooldownOf(Player* player, uint32 spellId)
@@ -252,38 +317,6 @@ class spell_blessings_shadow_voidtouched : public AuraScript
 class spell_blessings_shadow_bound_fiend : public AuraScript
 {
     PrepareAuraScript(spell_blessings_shadow_bound_fiend);
-
-    static Unit* FindFiend(Unit* owner)
-    {
-        for (Unit* controlled : owner->m_Controlled)
-            if (controlled->GetEntry() == NPC_SHADOWFIEND && controlled->GetUInt32Value(UNIT_CREATED_BY_SPELL) == SPELL_BOUND_FIEND_SUMMON)
-                return controlled;
-
-        return nullptr;
-    }
-
-    static void EnsureFiend(Unit* owner)
-    {
-        if (!owner || !owner->IsInWorld() || !owner->IsAlive())
-            return;
-
-        Unit* fiend = FindFiend(owner);
-        if (!fiend)
-        {
-            owner->CastSpell(owner, SPELL_BOUND_FIEND_SUMMON, true);
-            fiend = FindFiend(owner);
-        }
-
-        if (!fiend || !fiend->IsAlive())
-            return;
-
-        if (!fiend->HasAura(SPELL_BOUND_FIEND_BUFF))
-            fiend->CastSpell(fiend, SPELL_BOUND_FIEND_BUFF, true);
-
-        // a fiend that never leaves would hand back mana without end: the permanent one does not
-        if (fiend->HasAura(SPELL_SHADOWFIEND_LEECH))
-            fiend->RemoveAurasDueToSpell(SPELL_SHADOWFIEND_LEECH);
-    }
 
     void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
     {
@@ -521,7 +554,61 @@ class spell_blessings_shadow_void_lasher : public AuraScript
     }
 };
 
+// Glyph of the Bound Fiend: the parts of the talent rewrites that live outside the priest's own auras.
+//   Twisted Faith  the fiend hits harder against targets that carry the priest's Shadow Word: Pain
+//   Veiled Shadows when the fiend dies it is called again sooner
+//   Spirit Tap     a kill by the fiend counts as the priest's own (the stock chance and the experience or honor rule)
+// Darkness and Shadow Affinity are carried by the fiend's buff (EnsureFiend sets its amounts). The priest's own talent effects are plain spell data.
+class MoonlitBlessingsBoundFiendScript : public UnitScript
+{
+public:
+    MoonlitBlessingsBoundFiendScript() : UnitScript("MoonlitBlessingsBoundFiendScript", true, { UNITHOOK_MODIFY_MELEE_DAMAGE, UNITHOOK_ON_UNIT_DEATH }) { }
+
+    void ModifyMeleeDamage(Unit* target, Unit* attacker, uint32& damage) override
+    {
+        if (!target || !IsBoundFiend(attacker))
+            return;
+
+        Unit* owner = attacker->GetOwner();
+        if (!owner)
+            return;
+
+        uint32 rank = VariantRank(owner, SPELL_FIEND_TWISTED, 5);
+        if (rank && target->GetAuraEffect(SPELL_AURA_PERIODIC_DAMAGE, SPELLFAMILY_PRIEST, FLAG_SHADOW_WORD_PAIN, 0, 0, owner->GetGUID()))
+            damage += damage * rank / 100;
+    }
+
+    void OnUnitDeath(Unit* unit, Unit* killer) override
+    {
+        if (IsBoundFiend(unit))
+        {
+            Unit* owner = unit->GetOwner();
+            uint32 rank = owner ? VariantRank(owner, SPELL_FIEND_VEILED, 2) : 0;
+            if (rank && owner->IsAlive())
+            {
+                // without the talent the fiend is called again by the favor's 5 second tick; each rank brings it back 2 sec sooner
+                ObjectGuid ownerGuid = owner->GetGUID();
+                owner->m_Events.AddEventAtOffset([owner, ownerGuid]()
+                {
+                    if (owner->GetGUID() == ownerGuid)
+                        EnsureFiend(owner);
+                }, std::chrono::milliseconds(5000 - 2000 * rank));
+            }
+            return;
+        }
+
+        if (!unit || !IsBoundFiend(killer))
+            return;
+
+        Player* owner = killer->GetOwner() ? killer->GetOwner()->ToPlayer() : nullptr;
+        uint32 rank = owner ? VariantRank(owner, SPELL_FIEND_SPIRIT_TAP, 3) : 0;
+        if (rank && owner->isHonorOrXPTarget(unit) && roll_chance_i(rank < 3 ? 33 * rank : 100))
+            owner->CastSpell(owner, SPELL_SPIRIT_TAP_TRIGGER, true);
+    }
+};
+
 void AddMoonlitBlessingsShadowScripts()
+
 {
     RegisterSpellScript(spell_blessings_shadow_wand_reset);
     RegisterSpellScript(spell_blessings_shadow_damage_heal);
@@ -530,4 +617,5 @@ void AddMoonlitBlessingsShadowScripts()
     RegisterSpellScript(spell_blessings_shadow_bound_fiend);
     RegisterSpellScript(spell_blessings_shadow_torment);
     RegisterSpellScript(spell_blessings_shadow_void_lasher);
+    new MoonlitBlessingsBoundFiendScript();
 }

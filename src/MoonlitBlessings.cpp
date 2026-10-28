@@ -5,18 +5,10 @@
 //   * trainers show no spells and teach nothing (class spells arrive through Learn Spells, everything else through the Blessings);
 //   * on login the stock talents are reset once and free talent points are set to 0.
 // Spells granted by the Lua system go through Player::learnSpell and are NOT blocked: this module only uses the talent veto and the trainer hooks.
-//
-// Closure of the stock talent window and the stock glyph frame (owner decision 2026-10-27, the custom Lua talent system and glyph page replace both):
-//   * MoonlitLock.Talents.Enable = 1 closes stock talent spending for EVERY class (the same hooks as the Blessings lock, no class list needed);
-//   * MoonlitLock.Glyphs.Enable = 1 refuses to apply a stock glyph item to a native socket and strips any glyph already socketed (at login and after a spec switch).
-//     Glyph items with an entry at or above MoonlitLock.Glyphs.CustomItemIdFrom (our own, such as the Prime glyphs) are left alone until the custom glyph page carries them.
 // ~Moonlit Nights Team
 
 #include "Config.h"
-#include "Chat.h"
 #include "Creature.h"
-#include "DBCStores.h"
-#include "Item.h"
 #include "Log.h"
 #include "NPCPackets.h"
 #include "ObjectAccessor.h"
@@ -51,37 +43,6 @@ namespace
         }
         return false;
     }
-
-    // Stock talent spending is closed for this player: by the Blessings lock (listed classes) or by the all-class lock.
-    bool StockTalentsClosed(Player const* player)
-    {
-        return IsBlessingsClass(player) || (player && sConfigMgr->GetOption<bool>("MoonlitLock.Talents.Enable", false));
-    }
-
-    bool StockGlyphsClosed()
-    {
-        return sConfigMgr->GetOption<bool>("MoonlitLock.Glyphs.Enable", false);
-    }
-
-    // Remove every glyph socketed in the native frame for the player's active spec (the glyph auras too), then refresh the client.
-    void StripNativeGlyphs(Player* player)
-    {
-        bool changed = false;
-        for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
-        {
-            uint32 const glyph = player->GetGlyph(slot);
-            if (!glyph)
-                continue;
-
-            if (GlyphPropertiesEntry const* entry = sGlyphPropertiesStore.LookupEntry(glyph))
-                player->RemoveAurasDueToSpell(entry->SpellId);
-            player->SetGlyph(slot, 0, true);
-            changed = true;
-        }
-
-        if (changed)
-            player->SendTalentsInfoData(false);
-    }
 }
 
 class MoonlitBlessingsPlayer : public PlayerScript
@@ -96,24 +57,24 @@ public:
 
     bool OnPlayerCanLearnTalent(Player* player, TalentEntry const* /*talent*/, uint32 /*rank*/) override
     {
-        return !StockTalentsClosed(player);
+        return !IsBlessingsClass(player);
     }
 
     void OnPlayerGetTrainerSpellState(Player const* player, uint32 /*trainerId*/, uint32 /*spellId*/, Trainer::SpellState& state) override
     {
-        if (StockTalentsClosed(player))
+        if (IsBlessingsClass(player))
             state = Trainer::SpellState::Unavailable;
     }
 
     void OnPlayerBeforeReceiveSpellListFromTrainer(Player* player, Creature* /*trainer*/, WorldPackets::NPC::TrainerList& list) override
     {
-        if (StockTalentsClosed(player))
+        if (IsBlessingsClass(player))
             list.Spells.clear();
     }
 
     void OnPlayerLogin(Player* player) override
     {
-        if (!StockTalentsClosed(player))
+        if (!IsBlessingsClass(player))
             return;
 
         // The stock talent system is closed for this class: take back anything learned before, once (a no-op when nothing is learned)
@@ -125,43 +86,6 @@ public:
     }
 };
 
-
-// The stock glyph frame is closed: stock glyph items cannot be applied to a native socket and glyphs already socketed are taken out.
-class MoonlitGlyphLock : public PlayerScript
-{
-public:
-    MoonlitGlyphLock() : PlayerScript("MoonlitGlyphLock", {
-        PLAYERHOOK_CAN_CAST_ITEM_USE_SPELL,
-        PLAYERHOOK_ON_LOGIN,
-        PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED
-    }) { }
-
-    bool OnPlayerCanCastItemUseSpell(Player* player, Item* item, SpellCastTargets const& /*targets*/, uint8 /*cast_count*/, uint32 /*glyphIndex*/) override
-    {
-        if (!StockGlyphsClosed() || !player || !item)
-            return true;
-
-        ItemTemplate const* proto = item->GetTemplate();
-        if (proto->Class != ITEM_CLASS_GLYPH || proto->ItemId >= sConfigMgr->GetOption<uint32>("MoonlitLock.Glyphs.CustomItemIdFrom", 1000000))
-            return true;
-
-        if (WorldSession* session = player->GetSession())
-            ChatHandler(session).SendSysMessage("Glyphs are chosen on the custom glyph page, not in the stock glyph frame.");
-        return false;
-    }
-
-    void OnPlayerLogin(Player* player) override
-    {
-        if (StockGlyphsClosed())
-            StripNativeGlyphs(player);
-    }
-
-    void OnPlayerAfterSpecSlotChanged(Player* player, uint8 /*newSlot*/) override
-    {
-        if (StockGlyphsClosed())
-            StripNativeGlyphs(player);
-    }
-};
 
 // At start-up, check that every custom spell the Blessings use (table moonlit_blessing_spell, written by tools/phase2/gen_blessings_spells.py) exists in the spell store.
 class MoonlitBlessingsWorld : public WorldScript
@@ -274,7 +198,6 @@ void AddMoonlitBlessingsUnholyScripts();
 void AddSC_moonlit_blessings()
 {
     new MoonlitBlessingsPlayer();
-    new MoonlitGlyphLock();
     new MoonlitDruidSharedScript();
     AddMoonlitBlessingsSpellScripts();
     AddMoonlitBlessingsElementalScripts();

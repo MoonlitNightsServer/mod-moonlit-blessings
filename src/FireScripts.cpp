@@ -8,14 +8,20 @@
 //   spell_blessings_fire_pyromancer        Favor of the Pyromancer: a burn set by Fireball, Pyroblast or Frostfire Bolt is copied to nearby enemies at half strength
 //   MoonlitFireSpreadScript                Spreading Embers (a burn passes on when its carrier dies) and Wildfire Sovereign (a burn spreads when it would expire)
 //   MoonlitFirePhoenixScript               Phoenix Ember (a killing blow leaves 25% health and burns the enemies around the mage)
+//   spell_blessings_fire_cauterizer_conversion   Cauterizer's Conversion: Fire damage heals the group member with the lowest health percent; overheal becomes a heal over time
+//   spell_blessings_fire_phoenix_streak    Glyph of the Cauterizer, Hot Streak rewrite: two crits in a row can make the next Phoenix Flame instant, free and stronger
+//   MoonlitFireCauterizerScript            Glyph of the Cauterizer, Fiery Payback rewrite: the healing is stronger on allies below 35% health
 //
-// The Cauterizer's conversion (Fire damage heals the most injured ally) uses the generic spell_blessings_shaman_hybrid_heal of ElementalScripts.cpp.
+// The Ignite and Master of Elements rewrites are clones of the stock talents carrying the stock scripts (recipes/fire.py clone_behavior).
 // Spell ids come from the Fire registry block 1,420,000 (tools/talents/recipes/fire.py asserts the units that are named here).
 // Living Bomb belongs to mod-living-bomb (spell_mage_living_bomb_mop): nothing here binds a script to it.
 // ~Moonlit Nights Team
 
 #include "Cell.h"
 #include "CellImpl.h"
+#include "Group.h"
+#include "Pet.h"
+#include "GroupReference.h"
 #include "GridNotifiers.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -43,8 +49,18 @@ namespace
         SPELL_CAUTERIZE             = 1420080,
         SPELL_PHOENIX_FLAME         = 1420090,
         SPELL_HEARTH_FIRE           = 1420100,
-        SPELL_EMBER_WARD            = 1420110
+        SPELL_EMBER_WARD            = 1420110,
+
+        SPELL_CONVERSION_HEAL       = 1420071,   // the heal helper of the conversion (base points set per cast)
+        SPELL_CAUTERIZER_EMBERS     = 1420150,   // heal over time for the part of a heal an ally cannot take (base points = one tick)
+        SPELL_GLYPH_IGNITE          = 1420160,   // Ignite rewrite, 5 ranks: a critical heal also gains a heal over time worth 10% per rank
+        SPELL_GLYPH_PHOENIX_STREAK  = 1420190,   // buff: the next Phoenix Flame is instant, free and 50% stronger
+        SPELL_GLYPH_PAYBACK         = 1420210    // Fiery Payback rewrite, 2 ranks: effect 0 holds the percent
     };
+
+    constexpr float CONVERSION_RANGE = 40.0f;
+    constexpr int32 EMBERS_TICKS = 4;                                        // the heal over time lasts 8 sec in 2 sec ticks
+    constexpr uint32 PAYBACK_BELOW_PCT = 35;                                 // Fiery Payback: allies below this health percent
 
     constexpr uint32 CAUTERIZER_SPELLS[] = { SPELL_CAUTERIZE, SPELL_PHOENIX_FLAME, SPELL_HEARTH_FIRE, SPELL_EMBER_WARD };
     constexpr uint32 LIVING_BOMB_RANKS[] = { 44457, 55359, 55360 };         // the Living Bomb burn (rank 1 to 3)
@@ -52,6 +68,54 @@ namespace
     constexpr uint32 PYROMANCER_MAX_COPIES = 5;                              // enemies one hit may set ablaze
     constexpr int32 MARKER_EXTRA_MS = 2000;                                  // the spread marker is kept this long after the copy it marks
     constexpr int32 MIN_COPY_DURATION_MS = 1500;                             // a burn with less time left than this is not worth passing on
+
+    // The rank (0 = none) of a rewritten talent the player has: the variant spells run on by one per rank.
+    uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (owner->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
+    }
+
+    // The group member (the caster, party and raid members and their pets) within `range` yards of the caster with the lowest health percent. Null if nobody is hurt.
+    Unit* LowestHealthPercentFriend(Unit* caster, float range)
+    {
+        Unit* best = nullptr;
+        float bestPct = 100.0f;
+        auto consider = [&](Unit* u)
+        {
+            if (!u || !u->IsAlive() || !u->GetMaxHealth() || !u->IsWithinDist(caster, range))
+                return;
+
+            float const pct = 100.0f * float(u->GetHealth()) / float(u->GetMaxHealth());
+            if (pct < bestPct)
+            {
+                bestPct = pct;
+                best = u;
+            }
+        };
+
+        consider(caster);
+        if (Player* player = caster->ToPlayer())
+        {
+            if (Group* group = player->GetGroup())
+            {
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                {
+                    Player* member = ref->GetSource();
+                    consider(member);
+                    if (member)
+                        consider(member->GetPet());
+                }
+            }
+
+            consider(player->GetPet());
+        }
+
+        return best;
+    }
 
     bool IsLivingBomb(SpellInfo const* info)
     {
@@ -378,6 +442,122 @@ public:
     }
 };
 
+// Cauterizer's Conversion: effect 0 is the proc trigger whose value is the percent of the damage dealt (150 = 75% of the normal damage after the 50% loss). The heal goes to the group
+// member with the lowest health percent within 40 yards; whatever the ally cannot take becomes a heal over time on that ally. Ignite rewrite: when the hit was a critical strike,
+// the ally also gains a heal over time worth 10% per rank of the heal.
+class spell_blessings_fire_cauterizer_conversion : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_fire_cauterizer_conversion);
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ spellInfo->Effects[EFFECT_0].TriggerSpell, SPELL_CAUTERIZER_EMBERS });
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        DamageInfo* damageInfo = eventInfo.GetDamageInfo();
+        if (!damageInfo || !damageInfo->GetDamage())
+            return;
+
+        Unit* caster = GetTarget();
+        Unit* ally = LowestHealthPercentFriend(caster, CONVERSION_RANGE);
+        if (!ally)
+            return;
+
+        int32 const heal = CalculatePct(int32(damageInfo->GetDamage()), aurEff->GetAmount());
+        if (heal <= 0)
+            return;
+
+        int32 const missing = int32(ally->GetMaxHealth() - ally->GetHealth());
+        int32 const direct = std::min(heal, missing);
+        int32 extra = heal - direct;
+        if (eventInfo.GetHitMask() & PROC_EX_CRITICAL_HIT)
+            if (uint32 const rank = VariantRank(caster, SPELL_GLYPH_IGNITE, 5))
+                extra += CalculatePct(heal, 10 * rank);
+
+        uint32 const healSpellId = aurEff->GetSpellInfo()->Effects[aurEff->GetEffIndex()].TriggerSpell;
+        if (direct > 0)
+            caster->CastCustomSpell(healSpellId, SPELLVALUE_BASE_POINT0, direct, ally, true, nullptr, aurEff);
+
+        if (extra >= EMBERS_TICKS)
+            caster->CastCustomSpell(SPELL_CAUTERIZER_EMBERS, SPELLVALUE_BASE_POINT0, extra / EMBERS_TICKS, ally, true, nullptr, aurEff);
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_fire_cauterizer_conversion::HandleProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+};
+
+// Hot Streak rewrite (the stock talent's own counter, its buff replaced): two non-periodic spell critical strikes in a row, then a chance (the effect's value) to cast the
+// Phoenix Streak buff. Same rule as the stock script (spell_mage_hot_streak).
+class spell_blessings_fire_phoenix_streak : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_fire_phoenix_streak);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_GLYPH_PHOENIX_STREAK });
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        if (!(eventInfo.GetHitMask() & PROC_EX_CRITICAL_HIT))
+        {
+            _critStreak = 0;
+            return;
+        }
+
+        if (++_critStreak >= STREAK_CRITS)
+        {
+            _critStreak = 0;
+            if (roll_chance_i(aurEff->GetAmount()))
+                GetTarget()->CastSpell(GetTarget(), SPELL_GLYPH_PHOENIX_STREAK, true, nullptr, aurEff);
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_fire_phoenix_streak::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+
+private:
+    uint32 _critStreak = 0;
+};
+
+// Fiery Payback rewrite: the conversion heal and Cauterize heal more on an ally below 35% health. The core hands the two units to this hook in an order that depends on the kind of
+// heal, so the healer is the one that carries the talent.
+class MoonlitFireCauterizerScript : public UnitScript
+{
+public:
+    MoonlitFireCauterizerScript() : UnitScript("MoonlitFireCauterizerScript", true, { UNITHOOK_MODIFY_HEAL_RECEIVED }) { }
+
+    void ModifyHealReceived(Unit* target, Unit* healer, uint32& heal, SpellInfo const* spellInfo) override
+    {
+        if (!spellInfo || (spellInfo->Id != SPELL_CONVERSION_HEAL && spellInfo->Id != SPELL_CAUTERIZE && spellInfo->Id != SPELL_CAUTERIZER_EMBERS))
+            return;
+
+        Unit* receiver = target;
+        uint32 rank = healer ? VariantRank(healer, SPELL_GLYPH_PAYBACK, 2) : 0;
+        if (!rank && target)
+        {
+            rank = VariantRank(target, SPELL_GLYPH_PAYBACK, 2);
+            receiver = healer;
+        }
+
+        if (!rank || !receiver || !receiver->GetMaxHealth())
+            return;
+
+        if (receiver->GetHealthPct() < float(PAYBACK_BELOW_PCT))
+            heal += CalculatePct(heal, 15 * rank);
+    }
+};
+
 void AddMoonlitBlessingsFireScripts()
 {
     RegisterSpellScript(spell_blessings_fire_searing_resolve);
@@ -385,6 +565,9 @@ void AddMoonlitBlessingsFireScripts()
     RegisterSpellScript(spell_blessings_fire_hot_streak_buff);
     RegisterSpellScript(spell_blessings_fire_cauterizer);
     RegisterSpellScript(spell_blessings_fire_pyromancer);
+    RegisterSpellScript(spell_blessings_fire_cauterizer_conversion);
+    RegisterSpellScript(spell_blessings_fire_phoenix_streak);
+    new MoonlitFireCauterizerScript();
     new MoonlitFireSpreadScript();
     new MoonlitFirePhoenixScript();
 }

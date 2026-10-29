@@ -22,6 +22,7 @@
 #include "SpellScript.h"
 #include "SpellScriptLoader.h"
 #include "WorldSession.h"
+#include <cstring>
 #include <vector>
 
 namespace
@@ -100,9 +101,68 @@ namespace
         player->ApplyEnchantment(to, TEMP_ENCHANTMENT_SLOT, true);
     }
 
-    // Start the imbue's 30 minutes again.
+    // The weapon imbues by name (the enchantment's name in the DBC: "Windfury 3", "Flametongue 5", "Rockbiter 7", "Frostbrand 2").
+    enum class Imbue { None, Windfury, Flametongue, Rockbiter, Frostbrand, Other };
+
+    Imbue ImbueKind(uint32 enchantId)
+    {
+        if (!enchantId)
+            return Imbue::None;
+
+        SpellItemEnchantmentEntry const* enchant = sSpellItemEnchantmentStore.LookupEntry(enchantId);
+        char const* name = enchant ? enchant->description[0] : nullptr;
+        if (!name)
+            return Imbue::Other;
+
+        if (!strncmp(name, "Windfury", 8))
+            return Imbue::Windfury;
+        if (!strncmp(name, "Flametongue", 11))
+            return Imbue::Flametongue;
+        if (!strncmp(name, "Rockbiter", 9))
+            return Imbue::Rockbiter;
+        if (!strncmp(name, "Frostbrand", 10))
+            return Imbue::Frostbrand;
+
+        return Imbue::Other;
+    }
+
+    // Glyph of the Greatsword: a two-hander carries Windfury in the temporary slot and Rockbiter or Flametongue in the second (property) enchantment slot of the same weapon.
+    bool IsSecondImbue(Imbue kind)
+    {
+        return kind == Imbue::Flametongue || kind == Imbue::Rockbiter;
+    }
+
+    void SetSecondImbue(Player* player, Item* item, uint32 enchantId)
+    {
+        SpellItemEnchantmentEntry const* enchant = sSpellItemEnchantmentStore.LookupEntry(enchantId);
+        if (!enchant)
+            return;
+
+        if (item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0))
+            player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_0, false);
+
+        item->SetEnchantment(PROP_ENCHANTMENT_SLOT_0, enchantId, IMBUE_DURATION_MS, enchant->charges, player->GetGUID());
+        player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_0, true);
+    }
+
+    void ClearSecondImbue(Player* player, Item* item)
+    {
+        if (!item || !IsSecondImbue(ImbueKind(item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0))))
+            return;
+
+        player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_0, false);
+        item->ClearEnchantment(PROP_ENCHANTMENT_SLOT_0);
+    }
+
+    // Start the imbue's 30 minutes again (the second imbue of a Greatsword too).
     void RefreshImbue(Player* player, Item* item)
     {
+        if (item && IsSecondImbue(ImbueKind(item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0))))
+        {
+            player->AddEnchantmentDuration(item, PROP_ENCHANTMENT_SLOT_0, IMBUE_DURATION_MS);
+            item->SetEnchantmentDuration(PROP_ENCHANTMENT_SLOT_0, IMBUE_DURATION_MS, player);
+        }
+
         if (!IsShamanImbue(item))
             return;
 
@@ -409,9 +469,51 @@ class spell_blessings_greatsword_grip : public AuraScript
             player->AutoUnequipOffhandIfNeed(true);
     }
 
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            ClearSecondImbue(player, player->GetWeaponForAttack(BASE_ATTACK));
+    }
+
     void Register() override
     {
         AfterEffectApply += AuraEffectApplyFn(spell_blessings_greatsword_grip::HandleApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_blessings_greatsword_grip::HandleRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// Glyph of the Greatsword, the second imbue: bound to Windfury, Flametongue and Frostbrand Weapon (all ranks) and to the Rockbiter enchanting spells. With the grip on the main-hand weapon:
+//   a Rockbiter or Flametongue cast while the weapon carries Windfury goes to the second enchantment slot instead of replacing Windfury;
+//   a Windfury cast while the weapon carries Rockbiter or Flametongue moves that imbue to the second slot (Windfury takes the temporary slot);
+//   any other imbue (Frostbrand, a cast that replaces Windfury) empties the second slot.
+class spell_blessings_greatsword_imbue : public SpellScript
+{
+    PrepareSpellScript(spell_blessings_greatsword_imbue);
+
+    void HandleEnchant(SpellEffIndex effIndex)
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        Item* item = GetHitItem();
+        if (!player || !item || !player->HasAura(SPELL_GLYPH_GRIP) || item != player->GetWeaponForAttack(BASE_ATTACK))
+            return;
+
+        uint32 const enchantId = GetSpellInfo()->Effects[effIndex].MiscValue;
+        Imbue const cast = ImbueKind(enchantId);
+        Imbue const held = ImbueKind(item->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT));
+        if (cast == Imbue::Windfury && IsSecondImbue(held))
+            SetSecondImbue(player, item, item->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT));
+        else if (IsSecondImbue(cast) && held == Imbue::Windfury)
+        {
+            PreventHitDefaultEffect(effIndex);
+            SetSecondImbue(player, item, enchantId);
+        }
+        else if (!(cast == Imbue::Windfury && held == Imbue::Windfury))
+            ClearSecondImbue(player, item);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_blessings_greatsword_imbue::HandleEnchant, EFFECT_0, SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY);
     }
 };
 
@@ -484,6 +586,7 @@ void AddMoonlitBlessingsEnhancementScripts()
     new MoonlitBlessingsSpiritWolvesScript();
     new MoonlitBlessingsSpiritHealerScript();
     RegisterSpellScript(spell_blessings_greatsword_grip);
+    RegisterSpellScript(spell_blessings_greatsword_imbue);
     new MoonlitBlessingsGreatswordScript();
     new MoonlitBlessingsGreatswordPlayerScript();
 }

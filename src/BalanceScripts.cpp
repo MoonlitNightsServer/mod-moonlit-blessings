@@ -44,7 +44,8 @@ namespace
         SPELL_AUTO_SHOT         = 75,        // stock Auto Shot
         SPELL_GLYPH_STARLIGHT   = 1210080,   // Glyph of the Moonbow: Starlight Wrath rewrite (5 ranks): 10% per rank for two charges at once
         SPELL_GLYPH_BRAMBLES    = 1210100,   // Brambles rewrite (3 ranks): the treants hit 25% harder per rank
-        SPELL_GLYPH_MOONFURY    = 1210120    // Moonfury rewrite (3 ranks): 3%, 6%, 10% on the Verdant Surge cast
+        SPELL_GLYPH_MOONFURY    = 1210120,   // Moonfury rewrite (3 ranks): 3%, 6%, 10% on the Verdant Surge cast
+        SPELL_BRAMBLES_VIGOR    = 1210130    // Brambles: the treants' health helper (amount set per rank, refreshed by the keeper tick)
     };
 
     uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
@@ -333,6 +334,16 @@ class spell_blessings_balance_moonbow : public AuraScript
         Player* player = GetTarget()->ToPlayer();
         if (!player || !player->IsInWorld())
             return;
+
+        // Brambles rewrite: every treant of the druid (Force of Nature too) has 25% more health per rank
+        if (uint32 const brambles = player->IsAlive() ? VariantRank(player, SPELL_GLYPH_BRAMBLES, 3) : 0)
+            for (Unit* controlled : player->m_Controlled)
+                if (controlled->GetEntry() == NPC_TREANT && controlled->IsAlive())
+                {
+                    controlled->CastSpell(controlled, SPELL_BRAMBLES_VIGOR, true);
+                    if (AuraEffect* vigor = controlled->GetAuraEffect(SPELL_BRAMBLES_VIGOR, EFFECT_0))
+                        vigor->ChangeAmount(25 * int32(brambles));
+                }
 
         uint32 const summonSpell = GetSpellInfo()->Effects[EFFECT_1].TriggerSpell;
         uint32 const ammoId = LauncherAmmo(player);

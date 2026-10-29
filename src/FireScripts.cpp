@@ -35,6 +35,7 @@
 #include "WorldSession.h"
 #include <algorithm>
 #include <list>
+#include <unordered_map>
 
 namespace
 {
@@ -64,6 +65,20 @@ namespace
 
     constexpr uint32 CAUTERIZER_SPELLS[] = { SPELL_CAUTERIZE, SPELL_PHOENIX_FLAME, SPELL_HEARTH_FIRE, SPELL_EMBER_WARD };
     constexpr uint32 LIVING_BOMB_RANKS[] = { 44457, 55359, 55360 };         // the Living Bomb burn (rank 1 to 3)
+    constexpr uint32 SPELL_MOE_ENERGIZE = 29077;                            // the stock Master of Elements mana refund
+    constexpr uint32 LIVING_BOMB_ICON = 3000;                               // SpellIconID of Living Bomb (its explosion has no mana cost of its own)
+
+    // The base mana cost of the last Fire spell that fed each mage's conversion heal (Master of Elements refunds a share of it when the heal crits).
+    std::unordered_map<uint32, int32>& ConversionCost()
+    {
+        static std::unordered_map<uint32, int32> costs;
+        return costs;
+    }
+
+    int32 BaseManaCost(Unit const* mage, SpellInfo const* info)
+    {
+        return info->ManaCost + int32(CalculatePct(mage->GetCreateMana(), info->ManaCostPercentage));
+    }
     constexpr uint32 STREAK_CRITS = 2;                                       // critical hits in a row
     constexpr uint32 PYROMANCER_MAX_COPIES = 5;                              // enemies one hit may set ablaze
     constexpr int32 MARKER_EXTRA_MS = 2000;                                  // the spread marker is kept this long after the copy it marks
@@ -467,6 +482,9 @@ class spell_blessings_fire_cauterizer_conversion : public AuraScript
         if (!ally)
             return;
 
+        if (SpellInfo const* fire = damageInfo->GetSpellInfo())
+            ConversionCost()[caster->GetGUID().GetCounter()] = BaseManaCost(caster, fire);
+
         int32 const heal = CalculatePct(int32(damageInfo->GetDamage()), aurEff->GetAmount());
         if (heal <= 0)
             return;
@@ -489,6 +507,74 @@ class spell_blessings_fire_cauterizer_conversion : public AuraScript
     void Register() override
     {
         OnEffectProc += AuraEffectProcFn(spell_blessings_fire_cauterizer_conversion::HandleProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+};
+
+// Glyph of the Cauterizer, Master of Elements rewrite: the stock talent's refund (a share of the base mana cost of a spell that critically strikes) for Fire hits AND for critical heals:
+// Cauterize, Phoenix Flame and the conversion heal (which refunds the cost of the Fire spell that fed it). Effect 0 holds the percent (10 per rank).
+class spell_blessings_fire_master_of_elements : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_fire_master_of_elements);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_MOE_ENERGIZE });
+    }
+
+    static SpellInfo const* SourceSpell(ProcEventInfo& eventInfo)
+    {
+        if (DamageInfo* damage = eventInfo.GetDamageInfo())
+            if (damage->GetSpellInfo())
+                return damage->GetSpellInfo();
+
+        if (HealInfo* heal = eventInfo.GetHealInfo())
+            return heal->GetSpellInfo();
+
+        return nullptr;
+    }
+
+    bool CheckProc(ProcEventInfo& eventInfo)
+    {
+        return SourceSpell(eventInfo) != nullptr;
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+        SpellInfo const* spell = SourceSpell(eventInfo);
+        Unit* mage = GetTarget();
+        if (!spell)
+            return;
+
+        int32 mana = 0;
+        if (spell->Id == SPELL_CONVERSION_HEAL)
+        {
+            auto const found = ConversionCost().find(mage->GetGUID().GetCounter());
+            mana = found != ConversionCost().end() ? found->second : 0;
+        }
+        else
+        {
+            // the Living Bomb explosion has no cost of its own: the burn's first rank is the base (as the stock script does)
+            if (spell->SpellFamilyName == SPELLFAMILY_MAGE && spell->SpellIconID == LIVING_BOMB_ICON && !spell->ManaCost && !spell->ManaCostPercentage)
+            {
+                uint8 const rank = sSpellMgr->GetSpellRank(spell->Id);
+                spell = sSpellMgr->GetSpellInfo(sSpellMgr->GetSpellWithRank(LIVING_BOMB_RANKS[0], rank));
+                if (!spell)
+                    return;
+            }
+
+            mana = BaseManaCost(mage, spell);
+        }
+
+        mana = CalculatePct(mana, aurEff->GetAmount());
+        if (mana > 0)
+            mage->CastCustomSpell(SPELL_MOE_ENERGIZE, SPELLVALUE_BASE_POINT0, mana, mage, true, nullptr, aurEff);
+    }
+
+    void Register() override
+    {
+        DoCheckProc += AuraCheckProcFn(spell_blessings_fire_master_of_elements::CheckProc);
+        OnEffectProc += AuraEffectProcFn(spell_blessings_fire_master_of_elements::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
     }
 };
 
@@ -566,6 +652,7 @@ void AddMoonlitBlessingsFireScripts()
     RegisterSpellScript(spell_blessings_fire_cauterizer);
     RegisterSpellScript(spell_blessings_fire_pyromancer);
     RegisterSpellScript(spell_blessings_fire_cauterizer_conversion);
+    RegisterSpellScript(spell_blessings_fire_master_of_elements);
     RegisterSpellScript(spell_blessings_fire_phoenix_streak);
     new MoonlitFireCauterizerScript();
     new MoonlitFireSpreadScript();

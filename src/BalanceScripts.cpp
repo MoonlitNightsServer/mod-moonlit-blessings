@@ -41,8 +41,20 @@ namespace
         SPELL_LUNAR_ECLIPSE     = 1210032,
         SPELL_STARSURGE         = 1240020,   // castable, taught while the Favor of the Starsurge Adept lasts
         SPELL_STARSURGE_EMPOWERED = 1240021, // the one-charge buff Starsurge casts on the druid
-        SPELL_AUTO_SHOT         = 75         // stock Auto Shot
+        SPELL_AUTO_SHOT         = 75,        // stock Auto Shot
+        SPELL_GLYPH_STARLIGHT   = 1210080,   // Glyph of the Moonbow: Starlight Wrath rewrite (5 ranks): 10% per rank for two charges at once
+        SPELL_GLYPH_BRAMBLES    = 1210100,   // Brambles rewrite (3 ranks): the treants hit 25% harder per rank
+        SPELL_GLYPH_MOONFURY    = 1210120    // Moonfury rewrite (3 ranks): 3%, 6%, 10% on the Verdant Surge cast
     };
+
+    uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (owner->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
+    }
 
     // NPC_TREANT (1964, the stock Treant of Force of Nature) comes from PetDefines.h; the recipe asserts that creature 1964 is what Force of Nature summons
     constexpr uint32 MOONLIT_ARROW = 1000310;         // mod-moonlit-ammo: arrows for bows and crossbows
@@ -296,16 +308,24 @@ class spell_blessings_balance_moonbow : public AuraScript
         if (player->HasAura(surge))
             return;
 
+        // Starlight Wrath rewrite: a chance (10% per rank) for this Auto Shot to build two charges at once
+        uint32 const starlight = VariantRank(player, SPELL_GLYPH_STARLIGHT, 5);
+        uint32 const steps = (starlight && roll_chance_i(10 * int32(starlight))) ? 2 : 1;
         uint32 const counter = GetSpellInfo()->Effects[EFFECT_0].TriggerSpell;
         Aura const* count = player->GetAura(counter);
-        if (count && int32(count->GetStackAmount()) + 1 >= std::max(aurEff->GetAmount(), 1))
+        if (count && int32(count->GetStackAmount()) + int32(steps) >= std::max(aurEff->GetAmount(), 1))
         {
             player->RemoveAurasDueToSpell(counter);
             player->CastSpell(player, surge, true);
+            // Moonfury rewrite: the bonus belongs to the ready cast
+            if (uint32 const fury = VariantRank(player, SPELL_GLYPH_MOONFURY, 3))
+                if (AuraEffect* bonus = player->GetAuraEffect(surge, EFFECT_2))
+                    bonus->ChangeAmount(fury == 3 ? 10 : int32(3 * fury));
             return;
         }
 
-        player->CastSpell(player, counter, true);
+        for (uint32 i = 0; i < steps; ++i)
+            player->CastSpell(player, counter, true);
     }
 
     void HandlePeriodic(AuraEffect const* /*aurEff*/)
@@ -358,6 +378,11 @@ public:
         AuraEffect const* grove = owner && owner->IsPlayer() ? owner->GetAuraEffect(SPELL_GROVE_SOVEREIGN, EFFECT_2) : nullptr;
         if (grove && grove->GetAmount() > 0)
             damage += CalculatePct(damage, grove->GetAmount());
+
+        // Brambles rewrite: the treants hit 25% harder per rank
+        if (owner && owner->IsPlayer())
+            if (uint32 const brambles = VariantRank(owner, SPELL_GLYPH_BRAMBLES, 3))
+                damage += CalculatePct(damage, 25 * brambles);
     }
 };
 

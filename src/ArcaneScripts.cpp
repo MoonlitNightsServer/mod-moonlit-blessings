@@ -43,6 +43,7 @@ namespace
         SPELL_OVERCHARGE           = 1410101,   // the stack buff
         SPELL_OVERCHARGED          = 1410102,   // the unload bonus: a direct-damage spell modifier on every Mage spell (effect 0 = damage percent), ended by the Favor's script
 
+        SPELL_STORM_STRAIN         = 1410099,   // helper of the Favor of the Missile Storm: no critical strikes for the missiles while the mage moves
         SPELL_FAVOR_MISSILE_STORM  = 1410090,   // Favor of the Missile Storm; 1410091 .. 1410098 are its copies of Arcane Missiles rank 1 .. 8 (no move interrupt)
 
         // stock spell
@@ -583,11 +584,49 @@ class spell_blessings_arcane_missile_storm : public AuraScript
             player->removeSpell(rank, SPEC_MASK_ALL, false);
     }
 
+    // the cost: the helper that takes the critical chance of the missiles away is on the mage exactly while it moves
+    void HandleStrain(AuraEffect const* /*aurEff*/)
+    {
+        Unit* mage = GetTarget();
+        bool const moving = mage->isMoving();
+        if (moving && !mage->HasAura(SPELL_STORM_STRAIN))
+            mage->CastSpell(mage, SPELL_STORM_STRAIN, true);
+        else if (!moving && mage->HasAura(SPELL_STORM_STRAIN))
+            mage->RemoveAurasDueToSpell(SPELL_STORM_STRAIN);
+    }
+
     void Register() override
     {
         AfterEffectApply += AuraEffectApplyFn(spell_blessings_arcane_missile_storm::HandleApply, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
         AfterEffectRemove += AuraEffectRemoveFn(spell_blessings_arcane_missile_storm::HandleRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_blessings_arcane_missile_storm::HandleStrain, EFFECT_2, SPELL_AURA_PERIODIC_DUMMY);
     }
+};
+
+// Glyph of the Missile Storm, Missile Barrage rewrite: the passive procs on each missile (the proc chance is the rank's chance); the missile is cast once more at the same target, free.
+class spell_blessings_arcane_barrage_tick : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_arcane_barrage_tick);
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        SpellInfo const* tick = eventInfo.GetSpellInfo();
+        Unit* victim = eventInfo.GetActionTarget();
+        if (_extra || !tick || !victim || !victim->IsAlive())
+            return;
+
+        _extra = true;                                                  // the extra missile is a missile too: it must not roll again
+        GetTarget()->CastSpell(victim, tick->Id, true, nullptr, aurEff);
+        _extra = false;
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_arcane_barrage_tick::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+
+private:
+    bool _extra = false;
 };
 
 // Level-up half of the Favor of the Missile Storm: a new rank of Arcane Missiles replaces the copy the player holds.
@@ -613,5 +652,6 @@ void AddMoonlitBlessingsArcaneScripts()
     RegisterSpellScript(spell_blessings_arcane_singularity);
     RegisterSpellScript(spell_blessings_arcane_power_cost);
     RegisterSpellScript(spell_blessings_arcane_missile_storm);
+    RegisterSpellScript(spell_blessings_arcane_barrage_tick);
     new MoonlitArcaneStormPlayerScript();
 }

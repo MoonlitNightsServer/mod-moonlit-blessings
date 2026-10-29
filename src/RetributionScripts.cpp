@@ -47,8 +47,12 @@ namespace
         SPELL_SEALBOUND_STRIKES_BUFF  = 1530081,   // buff kept up while a Seal is on the Paladin: Crusader Strike and Divine Storm deal more damage
         SPELL_SEALFIRE_CUT            = 1530101,   // 2 sec spell modifier: Judgement and Seal damage -40% (set around the Sealfire cast only)
         SPELL_TWIN_SEALS              = 1530140,   // Favor of the Twin Seals (the hidden passive)
-        SPELL_TWIN_SEAL               = 1530141    // the Twin Seal marker: effect 0 holds the spell id of the second Seal
+        SPELL_TWIN_SEAL               = 1530141,   // the Twin Seal marker: effect 0 holds the spell id of the second Seal
+        SPELL_CRUSADER_STRIKE_OFFHAND = 1530160    // Glyph of the Dual Verdict: Crusader Strike with the off-hand weapon
     };
+
+    // Judgement of Light, Justice and Wisdom: the three Judgement spells a Paladin casts (the Seal decides the rest)
+    constexpr uint32 JUDGEMENT_SPELLS[] = { 20271, 53407, 53408 };
 
     enum StockSpells : uint32
     {
@@ -638,6 +642,53 @@ public:
     }
 };
 
+// Glyph of the Dual Verdict (the Favor of the Twin Seals is its aura, so it is on exactly while the glyph is slotted):
+//  * Judgement also judges the second Seal: the Judgement of a Seal is the spell named by the third effect of the Seal (the dummy amount), cast at the same enemy;
+//  * Crusader Strike also strikes with the off-hand weapon at once (a clone that is made with the off-hand, free and without a cooldown).
+class MoonlitBlessingsDualVerdictScript : public PlayerScript
+{
+public:
+    MoonlitBlessingsDualVerdictScript() : PlayerScript("MoonlitBlessingsDualVerdictScript", { PLAYERHOOK_ON_SPELL_CAST }) { }
+
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
+    {
+        if (!player || !spell || !player->HasAura(SPELL_TWIN_SEALS))
+            return;
+
+        uint32 const id = spell->GetSpellInfo()->Id;
+        Unit* target = spell->m_targets.GetUnitTarget();
+        if (!target || !target->IsAlive() || spell->IsTriggered())
+            return;
+
+        if (id == SPELL_CRUSADER_STRIKE)
+        {
+            if (player->haveOffhandWeapon())
+                player->CastSpell(target, SPELL_CRUSADER_STRIKE_OFFHAND, true);
+
+            return;
+        }
+
+        for (uint32 const judgement : JUDGEMENT_SPELLS)
+        {
+            if (id != judgement)
+                continue;
+
+            AuraEffect const* marker = player->GetAuraEffect(SPELL_TWIN_SEAL, EFFECT_0);
+            SpellInfo const* seal = marker ? sSpellMgr->GetSpellInfo(uint32(marker->GetAmount())) : nullptr;
+            if (!seal)
+                return;
+
+            // the judgement part of a Seal: the amount of its dummy third effect, or the plain Judgement damage for the Seals that have none
+            uint32 judged = SPELL_JUDGEMENT_DAMAGE;
+            if (seal->Effects[EFFECT_2].ApplyAuraName == SPELL_AURA_DUMMY && sSpellMgr->GetSpellInfo(uint32(seal->Effects[EFFECT_2].CalcValue())))
+                judged = uint32(seal->Effects[EFFECT_2].CalcValue());
+
+            player->CastSpell(target, judged, true);
+            return;
+        }
+    }
+};
+
 void AddMoonlitBlessingsRetributionScripts()
 {
     RegisterSpellScript(spell_blessings_retribution_twin_judgement);
@@ -651,4 +702,5 @@ void AddMoonlitBlessingsRetributionScripts()
     RegisterSpellScript(spell_blessings_retribution_twin_seals);
     RegisterSpellScript(spell_blessings_retribution_twin_seal);
     new MoonlitBlessingsTwinSealsScript();
+    new MoonlitBlessingsDualVerdictScript();
 }

@@ -42,6 +42,10 @@ namespace
         SPELL_AMBUSHER_BUFF        = 1220071,   // +100% energy regeneration, 6 sec
         SPELL_FAVOR_PACK_HUNTING   = 1220090,   // effect 1: the range in yards of the Pack Bond
         SPELL_PACK_BOND            = 1220091,   // +10% damage done, on the druid and the companion
+        SPELL_GLYPH_SAVAGE_FURY    = 1220110,   // Glyph of the Pack Hunting: Savage Fury rewrite (2 ranks): Pack Bond 5% per rank
+        SPELL_GLYPH_PREDATORY      = 1220120,   // Predatory Strikes rewrite (3 ranks): the companion gets 7%, 14%, 20% of the druid's melee attack power
+        SPELL_GLYPH_HEART          = 1220130,   // Heart of the Wild rewrite (5 ranks): the companion gets 2% per rank Stamina and attack power
+        SPELL_COMPANION_HEART      = 1220150,   // the companion's Stamina and attack power helper (amounts set by the Favor's script)
         SPELL_COMPANION_MIGHT      = 1220092,   // effect 0: attack power (worked out here), effect 1: percent of the druid's melee attack power
         SPELL_CALL_OF_THE_PACK     = 1240040,   // the Call Pet that works in Cat Form; knowing it makes a druid a pet owner (MoonlitFeralPlayerScript)
         SPELL_YOUNG_COMPANION      = 1240041,   // creates the first companion (a Young Nightsaber)
@@ -78,6 +82,16 @@ namespace
     {
         AuraEffect const* aurEff = unit ? unit->GetAuraEffect(spellId, effect) : nullptr;
         return aurEff ? aurEff->GetAmount() : 0;
+    }
+
+    // The rank (0 = none) of a rewritten talent the player has: the rewrite spells run on by one per rank.
+    uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (owner->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
     }
 
     bool IsProwl(uint32 spellId)
@@ -289,6 +303,39 @@ class spell_blessings_feral_pack_hunting : public AuraScript
         if (pet && !pet->HasAura(SPELL_COMPANION_MIGHT))
             pet->AddAura(SPELL_COMPANION_MIGHT, pet);
 
+        // the companion comes only in Cat Form: a bear shape sends it away, and it comes back by itself when the druid is a cat again
+        if (player->GetShapeshiftForm() == FORM_BEAR || player->GetShapeshiftForm() == FORM_DIREBEAR)
+        {
+            if (pet)
+            {
+                pet->RemoveAurasDueToSpell(SPELL_PACK_BOND);
+                player->RemoveAurasDueToSpell(SPELL_PACK_BOND);
+                player->UnsummonPetTemporaryIfAny();
+            }
+
+            return;
+        }
+
+        if (!pet && player->GetShapeshiftForm() == FORM_CAT)
+            player->ResummonPetTemporaryUnSummonedIfAny();
+
+        // Heart of the Wild rewrite: the companion shares the druid's Stamina and attack power bonus
+        if (pet)
+        {
+            if (uint32 const heart = VariantRank(player, SPELL_GLYPH_HEART, 5))
+            {
+                if (!pet->HasAura(SPELL_COMPANION_HEART))
+                    pet->AddAura(SPELL_COMPANION_HEART, pet);
+
+                if (Aura* aura = pet->GetAura(SPELL_COMPANION_HEART))
+                    for (uint8 i = 0; i < 2; ++i)
+                        if (AuraEffect* effect = aura->GetEffect(i))
+                            effect->ChangeAmount(int32(2 * heart));
+            }
+            else
+                pet->RemoveAurasDueToSpell(SPELL_COMPANION_HEART);
+        }
+
         float const range = float(std::max(Param(player, SPELL_FAVOR_PACK_HUNTING, EFFECT_1), 0));
         if (pet && player->IsAlive() && player->GetExactDist(pet) <= range)
         {
@@ -297,6 +344,15 @@ class spell_blessings_feral_pack_hunting : public AuraScript
 
             if (!pet->HasAura(SPELL_PACK_BOND))
                 player->AddAura(SPELL_PACK_BOND, pet);                      // CastSpell would put the aura on the druid again (the spell targets its caster)
+
+            // Savage Fury rewrite: the bond is 5% per rank (10% without the rewrite)
+            if (uint32 const fury = VariantRank(player, SPELL_GLYPH_SAVAGE_FURY, 2))
+            {
+                if (AuraEffect* mine = player->GetAuraEffect(SPELL_PACK_BOND, EFFECT_0))
+                    mine->ChangeAmount(int32(5 * fury));
+                if (AuraEffect* theirs = pet->GetAuraEffect(SPELL_PACK_BOND, EFFECT_0))
+                    theirs->ChangeAmount(int32(5 * fury));
+            }
         }
         else
         {
@@ -330,7 +386,9 @@ class spell_blessings_feral_companion_might : public AuraScript
         if (!owner || !owner->IsPlayer())
             return;
 
-        int32 const percent = GetSpellInfo()->Effects[EFFECT_1].CalcValue();
+        int32 percent = GetSpellInfo()->Effects[EFFECT_1].CalcValue();
+        if (uint32 const rank = VariantRank(owner, SPELL_GLYPH_PREDATORY, 3))
+            percent = int32((7 * rank > 20) ? 20 : 7 * rank);                // 7%, 14%, 20% (Predatory Strikes rewrite)
         amount = int32(CalculatePct(std::max<float>(owner->GetTotalAttackPowerValue(BASE_ATTACK), 0.0f), percent));
     }
 

@@ -147,6 +147,11 @@ namespace Martyr
     constexpr uint32 SPELL_FAVOR_BULWARK = 1640370;       // effect 1: percent faster Aegis refill
     constexpr uint32 SPELL_FAVOR_REDEEMER = 1640380;      // effect 0: percent of every melee hit added to the Aegis
 
+    constexpr uint32 SPELL_GLYPH_IMPROVED_SHIELD = 1640460;   // Glyph of the Martyr: Improved Power Word: Shield rewrite (3 ranks): the Aegis is 5% larger and refills 5% faster per rank
+    constexpr uint32 SPELL_GLYPH_REFLECTIVE = 1640470;        // Reflective Shield rewrite (2 ranks): 20% per rank of the absorbed damage as Holy damage split among the foes within 10 yards
+    constexpr uint32 SPELL_GLYPH_WARDING = 1640490;           // Spell Warding rewrite (5 ranks): 2% less damage taken per rank while the Aegis holds a shield
+    constexpr uint32 SPELL_GLYPH_WARDING_BUFF = 1640510;      // its helper (amount set per rank)
+
     constexpr int32 AEGIS_EMPTY_AMOUNT = 1;               // the shield never drops below 1 point (spell_martyr_aegis_hooks keeps it alive), so 1 means empty
     constexpr int32 AEGIS_BASE_CAP_PCT = 25;              // the Aegis size without Sunlit Aegis (MoonlitBlessingsSpells.cpp: AEGIS_CAP_PCT_OF_HEALTH)
     constexpr int32 BLOW_BASE_SHARE_PCT = 10;             // the share Sanctified Blow adds by itself (MoonlitBlessingsSpells.cpp: SANCTIFIED_BLOW_SHARE_PCT)
@@ -158,10 +163,21 @@ namespace Martyr
         return aurEff ? aurEff->GetAmount() : 0;
     }
 
-    // The Aegis size in percent of maximum health, and in health points.
+    // The rank (0 = none) of a rewritten talent the player has: the rewrite spells run on by one per rank.
+    inline uint32 VariantRank(Unit const* unit, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (unit->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
+    }
+
+    // The Aegis size in percent of maximum health, and in health points. (Improved Power Word: Shield rewrite: 5% larger per rank.)
     inline int32 AegisCapPct(Unit const* unit)
     {
-        return std::max(AEGIS_BASE_CAP_PCT, Param(unit, SPELL_SUNLIT_AEGIS));
+        int32 const pct = std::max(AEGIS_BASE_CAP_PCT, Param(unit, SPELL_SUNLIT_AEGIS));
+        return pct + pct * 5 * int32(VariantRank(unit, SPELL_GLYPH_IMPROVED_SHIELD, 3)) / 100;
     }
 
     inline int32 AegisCap(Unit const* unit)
@@ -172,7 +188,7 @@ namespace Martyr
     // Extra refill speed in percent (Guarded Faith plus Favor of the Bulwark).
     inline int32 AegisRefillBonusPct(Unit const* unit)
     {
-        return Param(unit, SPELL_GUARDED_FAITH) + Param(unit, SPELL_FAVOR_BULWARK, EFFECT_1);
+        return Param(unit, SPELL_GUARDED_FAITH) + Param(unit, SPELL_FAVOR_BULWARK, EFFECT_1) + 5 * int32(VariantRank(unit, SPELL_GLYPH_IMPROVED_SHIELD, 3));
     }
 
     // What the Aegis refills each second before any bonus. Same formula as the shield script in MoonlitBlessingsSpells.cpp (keep both in step).
@@ -229,6 +245,20 @@ namespace Martyr
             unit->CastSpell(unit, SPELL_ROOTED_BUFF, true);
         else if (!active && has)
             unit->RemoveAurasDueToSpell(SPELL_ROOTED_BUFF);
+
+        // Spell Warding rewrite: 2% less damage from every source per rank, exactly while the Aegis holds more than its empty point
+        uint32 const warding = VariantRank(unit, SPELL_GLYPH_WARDING, 5);
+        bool const warded = warding && AegisAmount(unit) - pendingAbsorb > AEGIS_EMPTY_AMOUNT;
+        if (warded)
+        {
+            if (!unit->HasAura(SPELL_GLYPH_WARDING_BUFF))
+                unit->CastSpell(unit, SPELL_GLYPH_WARDING_BUFF, true);
+
+            if (AuraEffect* effect = unit->GetAuraEffect(SPELL_GLYPH_WARDING_BUFF, EFFECT_0))
+                effect->ChangeAmount(-2 * int32(warding));
+        }
+        else
+            unit->RemoveAurasDueToSpell(SPELL_GLYPH_WARDING_BUFF);
     }
 
     // Add `amount` to the Aegis, never beyond its cap.

@@ -16,7 +16,10 @@
 // The shared helpers (cap, refill, adding to the Aegis) are in BlessingsHelpers.h, namespace BlessingsHelpers::Martyr. The values are the amounts of the Boon spells' effects.
 // ~Moonlit Nights Team
 
+#include "Cell.h"
+#include "CellImpl.h"
 #include "BlessingsHelpers.h"
+#include "GridNotifiers.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -25,6 +28,7 @@
 #include "SpellScriptLoader.h"
 #include "UnitScript.h"
 
+#include <list>
 #include <vector>
 
 namespace Martyr = BlessingsHelpers::Martyr;
@@ -32,6 +36,25 @@ namespace Martyr = BlessingsHelpers::Martyr;
 namespace
 {
     constexpr int32 RETRIBUTION_TICKS = 4;                 // the burn lasts 4 sec at one tick per second (see the duration of spell 1640311)
+
+    // Glyph of the Martyr, Reflective Shield rewrite: the reflected damage is split evenly among the foes within 10 yards of the Martyr.
+    void ReflectAround(Unit* martyr, int32 total)
+    {
+        std::list<Unit*> foes;
+        Acore::AnyUnfriendlyUnitInObjectRangeCheck check(martyr, martyr, 10.0f);
+        Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(martyr, foes, check);
+        Cell::VisitObjects(martyr, searcher, 10.0f);
+        foes.remove_if([martyr](Unit* unit) { return !martyr->IsValidAttackTarget(unit); });
+        if (foes.empty())
+            return;
+
+        int32 const each = total / int32(foes.size());
+        if (each <= 0)
+            return;
+
+        for (Unit* foe : foes)
+            martyr->CastCustomSpell(foe, Martyr::SPELL_THORNED_DAMAGE, &each, nullptr, nullptr, true);
+    }
 }
 
 // A second script on the Eternal Aegis shield. The owner's script (spell_blessings_eternal_aegis_shield) keeps the shield and its one-second refill; this one adds what the
@@ -78,6 +101,14 @@ class spell_martyr_aegis_hooks : public AuraScript
                 }
             }
 
+            // Reflective Shield rewrite: 20% per rank of the absorbed damage hits every foe around the Martyr, split evenly (never from its own reflection).
+            if (uint32 const reflective = Martyr::VariantRank(target, Martyr::SPELL_GLYPH_REFLECTIVE, 2))
+            {
+                SpellInfo const* source = dmgInfo.GetSpellInfo();
+                if (dmgInfo.GetAttacker() && dmgInfo.GetAttacker() != target && (!source || source->Id != Martyr::SPELL_THORNED_DAMAGE))
+                    ReflectAround(target, CalculatePct(int32(absorbAmount), 20 * int32(reflective)));
+            }
+
             // Mending Wounds: a share of the absorbed damage heals the player.
             if (AuraEffect const* mending = target->GetAuraEffect(Martyr::SPELL_MENDING_WOUNDS, EFFECT_0))
                 BlessingsHelpers::HealUnit(target, target, CalculatePct(absorbAmount, mending->GetAmount()), Martyr::SPELL_MENDING_WOUNDS);
@@ -114,6 +145,24 @@ private:
 };
 
 // Sanctified Pact: give up a share of the maximum health (taken directly, so the Aegis neither absorbs it nor reflects it) to refill the Aegis.
+// Glyph of the Martyr, Divine Aegis rewrite: a melee critical strike adds a share (effect 0, 10% per rank) of its damage to the Aegis.
+class spell_martyr_glyph_divine_aegis : public AuraScript
+{
+    PrepareAuraScript(spell_martyr_glyph_divine_aegis);
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        DamageInfo const* damageInfo = eventInfo.GetDamageInfo();
+        if (damageInfo && damageInfo->GetDamage())
+            Martyr::AddToAegis(GetTarget(), CalculatePct(int32(damageInfo->GetDamage()), aurEff->GetAmount()));
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_martyr_glyph_divine_aegis::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
 class spell_martyr_sanctified_pact : public SpellScript
 {
     PrepareSpellScript(spell_martyr_sanctified_pact);
@@ -398,6 +447,7 @@ void AddMoonlitBlessingsMartyrScripts()
 {
     RegisterSpellScript(spell_martyr_aegis_hooks);
     RegisterSpellScript(spell_martyr_sanctified_pact);
+    RegisterSpellScript(spell_martyr_glyph_divine_aegis);
     RegisterSpellScript(spell_martyr_radiant_pulse);
     RegisterSpellScript(spell_martyr_sanctified_blow_boons);
     RegisterSpellScript(spell_martyr_burning_strike_boons);

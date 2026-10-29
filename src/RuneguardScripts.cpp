@@ -56,6 +56,11 @@ namespace
         SPELL_FAVOR_AEGIS         = 1140190,
         SPELL_AEGIS_SHIELD        = 1140191,
         SPELL_FAVOR_BASTION       = 1140200,
+        SPELL_GLYPH_DEATH_STRIKE  = 1140260,   // Glyph of the Bloodforged Bulwark: Improved Death Strike rewrite (2 ranks): +10% per rank on the over-shield
+        SPELL_GLYPH_TOUGHNESS     = 1140280,   // Glyph of the Frozen Bastion: Toughness rewrite (5 ranks): +1% armour per stack for each rank
+        SPELL_GLYPH_ANTICIPATION  = 1140290,   // Glyph of the Frozen Bastion: Anticipation rewrite (5 ranks): dodge from the stacks
+        SPELL_FROZEN_REFLEXES     = 1140300,   // the dodge helper (amount set by the script)
+        SPELL_GLYPH_BONE_SHIELD   = 1140240,   // the Bone Shield rewrite of the Glyph of the Unbroken Bones (a clone of the stock talent spell 49222 without its damage bonus)
         SPELL_BONE_SHIELD_CAST    = 1140212,   // the castable Bone Shield of the Favor of the Unbroken Bones
         SPELL_BONE_SHIELD_AURA    = 1140213,   // its aura: charges are the bones
         SPELL_DEATHS_ADVANCE      = 1140110,
@@ -200,11 +205,23 @@ namespace
         g_aegisHistory.erase(victim->GetGUID().GetRawValue());
     }
 
+    // The rank (0 = none) of a rewritten talent the player has: the rewrite spells run on by one per rank.
+    uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (owner->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
+    }
+
     // Forge the over-shield: 30% of the damage of the last 5 sec, at least 7% and at most 35% of maximum health, added to the shield that is still there, up to 35% of maximum health, for a fresh 10 sec.
     void ForgeAegis(Unit* player)
     {
         uint32 const maxCap = player->CountPctFromMaxHealth(AEGIS_CAP_PCT);
         uint32 shield = CalculatePct(AegisDamageTaken(player), AEGIS_SHARE_PCT);
+        if (uint32 const rank = VariantRank(player, SPELL_GLYPH_DEATH_STRIKE, 2))                    // Glyph of the Bloodforged Bulwark: Improved Death Strike enlarges the shield
+            shield += CalculatePct(shield, 10 * rank);
         shield = std::max<uint32>(shield, player->CountPctFromMaxHealth(AEGIS_MIN_PCT));
         shield = std::min<uint32>(shield, maxCap);
 
@@ -567,6 +584,33 @@ class spell_runeguard_frozen_bastion : public AuraScript
     {
         _expiry.clear();
         GetTarget()->RemoveAurasDueToSpell(PlateSpell());
+        GetTarget()->RemoveAurasDueToSpell(SPELL_FROZEN_REFLEXES);
+    }
+
+    // Glyph of the Frozen Bastion: Toughness makes every stack stronger (10% plus 1% per rank), Anticipation turns the stacks into dodge. Without the rewrites nothing changes.
+    void SyncRewrites(Player* knight, Aura* plate) const
+    {
+        uint32 const stacks = plate ? plate->GetStackAmount() : 0;
+        if (plate)
+            if (AuraEffect* armor = plate->GetEffect(EFFECT_0))
+                armor->ChangeAmount(10 + int32(VariantRank(knight, SPELL_GLYPH_TOUGHNESS, 5)));
+
+        int32 const dodge = int32((stacks * VariantRank(knight, SPELL_GLYPH_ANTICIPATION, 5) + 3) / 4);
+        if (stacks && dodge > 0)
+        {
+            if (!knight->HasAura(SPELL_FROZEN_REFLEXES))
+                knight->CastSpell(knight, SPELL_FROZEN_REFLEXES, true);
+
+            if (Aura* reflexes = knight->GetAura(SPELL_FROZEN_REFLEXES))
+            {
+                if (AuraEffect* effect = reflexes->GetEffect(EFFECT_0))
+                    effect->ChangeAmount(dodge);
+
+                reflexes->SetDuration(plate->GetDuration());
+            }
+        }
+        else
+            knight->RemoveAurasDueToSpell(SPELL_FROZEN_REFLEXES);
     }
 
     void HandlePeriodic(AuraEffect const* /*aurEff*/)
@@ -594,6 +638,8 @@ class spell_runeguard_frozen_bastion : public AuraScript
             plate->Remove();
         else if (plate->GetStackAmount() != _expiry.size())
             plate->SetStackAmount(uint8(_expiry.size()));
+
+        SyncRewrites(knight, knight->GetAura(PlateSpell()));
     }
 
     void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
@@ -627,6 +673,7 @@ class spell_runeguard_frozen_bastion : public AuraScript
 
         plate->SetStackAmount(uint8(_expiry.size()));
         plate->SetDuration(plate->GetMaxDuration());                   // the aura's own clock follows the newest stack
+        SyncRewrites(knight, plate);
     }
 
     void Register() override
@@ -712,6 +759,33 @@ class spell_runeguard_bones_return : public AuraScript
     }
 };
 
+// Glyph of the Unbroken Bones (the proc passive that is the glyph): a Plague Strike or Scourge Strike hit adds one bone to the Bone Shield rewrite, never above the charges the
+// spell starts with. The proc row has a 0.1 sec cooldown so that the off-hand strike and the triggered Scourge Strike do not count twice.
+class spell_runeguard_glyph_bones_return : public AuraScript
+{
+    PrepareAuraScript(spell_runeguard_glyph_bones_return);
+
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
+    {
+        if (SpellInfo const* spellInfo = eventInfo.GetSpellInfo())
+            if (sSpellMgr->GetFirstSpellInChain(spellInfo->Id) == SPELL_PLAGUE_STRIKE_OFF_HAND || spellInfo->Id == SPELL_SCOURGE_STRIKE_TRIGGERED)
+                return;
+
+        Aura* bones = GetTarget()->GetAura(SPELL_GLYPH_BONE_SHIELD);
+        if (!bones)
+            return;
+
+        uint32 const most = std::max<uint32>(bones->GetSpellInfo()->ProcCharges, 1);
+        if (bones->GetCharges() < most)
+            bones->ModCharges(1);
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_runeguard_glyph_bones_return::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
 // The castable Bone Shield: an instant self cast whose dummy effect gives the bones.
 class spell_runeguard_bone_shield_cast : public SpellScript
 {
@@ -789,6 +863,7 @@ void AddMoonlitBlessingsRuneguardScripts()
     RegisterSpellScript(spell_runeguard_frozen_bastion);
     RegisterSpellScript(spell_runeguard_bones_teacher);
     RegisterSpellScript(spell_runeguard_bones_return);
+    RegisterSpellScript(spell_runeguard_glyph_bones_return);
     RegisterSpellScript(spell_runeguard_bone_shield_cast);
     new MoonlitRuneguardUnitScript();
 }

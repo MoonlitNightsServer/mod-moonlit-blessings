@@ -56,6 +56,48 @@ namespace BlessingsHelpers
         return best;
     }
 
+    // The group member (the caster, party and raid members and their pets) within `range` yards of the caster with the lowest health percent that is below 100%, leaving out the units
+    // in `skip`. Null if nobody is hurt. (The Cauterizer and the Spirit Healer heal by health percent, not by missing health.)
+    inline Unit* LowestHealthPercentFriend(Unit* caster, float range, std::vector<ObjectGuid> const& skip = {})
+    {
+        if (!caster)
+            return nullptr;
+
+        Unit* best = nullptr;
+        float bestPct = 100.0f;
+        auto consider = [&](Unit* u)
+        {
+            if (!u || !u->IsAlive() || !u->GetMaxHealth() || !u->IsWithinDist(caster, range) || std::find(skip.begin(), skip.end(), u->GetGUID()) != skip.end())
+                return;
+
+            float const pct = 100.0f * float(u->GetHealth()) / float(u->GetMaxHealth());
+            if (pct < bestPct)
+            {
+                bestPct = pct;
+                best = u;
+            }
+        };
+
+        consider(caster);
+        if (Player* player = caster->ToPlayer())
+        {
+            if (Group* group = player->GetGroup())
+            {
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                {
+                    Player* member = ref->GetSource();
+                    consider(member);
+                    if (member)
+                        consider(member->GetPet());
+                }
+            }
+
+            consider(player->GetPet());
+        }
+
+        return best;
+    }
+
     // Heal `target` for `amount` as `caster` (no cast needed). `spellId` is the spell the heal is attributed to; it may be 0.
     inline void HealUnit(Unit* caster, Unit* target, uint32 amount, uint32 spellId = 0)
     {

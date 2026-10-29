@@ -33,7 +33,9 @@ namespace
         SPELL_SPIRIT_ARMOR_BUFF          = 1820031,
         SPELL_STORMBRINGER_STRIKE        = 1820041,
         SPELL_PACK_LEADER_HASTE          = 1820051,
-        SPELL_EARTH_SLAM                 = 1820071
+        SPELL_EARTH_SLAM                 = 1820071,
+        SPELL_GLYPH_FROZEN_POWER         = 1820150,   // Glyph of the Spirit Healer: Frozen Power rewrite (2 ranks): weapon strikes hit slowed targets 10% harder per rank
+        SPELL_STATIC_SHOCK_MANA          = 1820160    // the mana helper of the Static Shock rewrite
     };
 
     enum EnhancementCreatures : uint32
@@ -277,6 +279,92 @@ public:
     }
 };
 
+// Glyph of the Spirit Healer: effect 0 is the proc trigger (the percent of the damage dealt, 170 = 85% of the normal damage after the 50% loss). The heal goes to the group member
+// with the lowest health percent within 40 yards. What the ally cannot take echoes to the next injured ally at half strength, up to two jumps.
+class spell_blessings_enhancement_spirit_healer : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_enhancement_spirit_healer);
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ spellInfo->Effects[EFFECT_0].TriggerSpell });
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        DamageInfo* damageInfo = eventInfo.GetDamageInfo();
+        if (!damageInfo || !damageInfo->GetDamage())
+            return;
+
+        Unit* caster = GetTarget();
+        uint32 const healSpellId = aurEff->GetSpellInfo()->Effects[aurEff->GetEffIndex()].TriggerSpell;
+        SpellInfo const* healSpell = sSpellMgr->GetSpellInfo(healSpellId);
+        if (!healSpell)
+            return;
+
+        float const range = healSpell->GetMaxRange(true);
+        int32 carry = CalculatePct(int32(damageInfo->GetDamage()), aurEff->GetAmount());
+        std::vector<ObjectGuid> used;
+        for (uint32 jump = 0; jump <= 2 && carry > 0; ++jump)
+        {
+            Unit* ally = BlessingsHelpers::LowestHealthPercentFriend(caster, range, used);
+            if (!ally)
+                return;
+
+            used.push_back(ally->GetGUID());
+            int32 const missing = int32(ally->GetMaxHealth() - ally->GetHealth());
+            int32 const direct = std::min(carry, missing);
+            if (direct > 0)
+                caster->CastCustomSpell(healSpellId, SPELLVALUE_BASE_POINT0, direct, ally, true, nullptr, aurEff);
+
+            carry = (carry - direct) / 2;                              // the echo is half of what was left over
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_enhancement_spirit_healer::HandleProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+};
+
+// Static Shock rewrite: the passive procs on melee hits with the rank's chance and gives back mana.
+class spell_blessings_enhancement_static_orb : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_enhancement_static_orb);
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& /*eventInfo*/)
+    {
+        GetTarget()->CastSpell(GetTarget(), SPELL_STATIC_SHOCK_MANA, true, nullptr, aurEff);
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_enhancement_static_orb::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
+// Frozen Power rewrite: a Shaman with the rewrite hits slowed targets harder with weapon strikes.
+class MoonlitBlessingsSpiritHealerScript : public UnitScript
+{
+public:
+    MoonlitBlessingsSpiritHealerScript() : UnitScript("MoonlitBlessingsSpiritHealerScript", true, { UNITHOOK_MODIFY_MELEE_DAMAGE }) { }
+
+    void ModifyMeleeDamage(Unit* target, Unit* attacker, uint32& damage) override
+    {
+        if (!target || !attacker || !attacker->IsPlayer() || !target->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED))
+            return;
+
+        for (uint32 rank = 2; rank > 0; --rank)
+            if (attacker->HasAura(SPELL_GLYPH_FROZEN_POWER + rank - 1))
+            {
+                damage += CalculatePct(damage, 10 * rank);
+                return;
+            }
+    }
+};
+
 void AddMoonlitBlessingsEnhancementScripts()
 {
     RegisterSpellScript(spell_blessings_spirit_armor);
@@ -284,5 +372,8 @@ void AddMoonlitBlessingsEnhancementScripts()
     RegisterSpellScript(spell_blessings_pack_leader);
     RegisterSpellScript(spell_blessings_imbue_keeper);
     RegisterSpellScript(spell_blessings_greatsword);
+    RegisterSpellScript(spell_blessings_enhancement_spirit_healer);
+    RegisterSpellScript(spell_blessings_enhancement_static_orb);
     new MoonlitBlessingsSpiritWolvesScript();
+    new MoonlitBlessingsSpiritHealerScript();
 }

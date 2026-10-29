@@ -88,7 +88,7 @@ namespace
     constexpr float FLANKING_PET_RANGE = 10.0f;                    // the pet joins a Flanking Strike only within this many yards of the target
     constexpr float GAMBIT_RANGE     = 10.0f;                      // yards around the enemy that set an area trap off
     constexpr int32 SKEWER_TICKS     = 6;                          // the bleed lasts 6 sec in one second ticks (asserted by the recipe)
-    constexpr int32 LACERATING_TICKS = 7;                          // the bleed lasts 21 sec in ticks of 3 sec (asserted by the recipe)
+    constexpr int32 LACERATING_TICKS = 5;                          // the bleed lasts 5 sec in ticks of 1 sec (asserted by the recipe)
     constexpr int32 BLEED_EXTEND_CAP = 2;                          // a bleed never lasts more than this many times its normal length
 
     // A two-handed melee weapon in the main hand.

@@ -59,6 +59,17 @@ namespace
         SPELL_LEGION_LORD           = 1920090,   // effect 0: percent longer life (50)
         SPELL_LEGION_MIGHT          = 1920091,   // effect 0: spell damage, effect 1: attack power (set per demon)
 
+        SPELL_GLYPH_HELPER          = 1920160,   // Glyph of the Felguard Form: Felguard Talents (damage dealt, damage taken, attack power; amounts set by the Favor's tick)
+        SPELL_GLYPH_TACTICS_HELPER  = 1920161,   // its melee crit helper
+        SPELL_GLYPH_UNHOLY_POWER    = 1920170,   // 5 ranks
+        SPELL_GLYPH_MASTER          = 1920180,   // 5 ranks
+        SPELL_GLYPH_KNOWLEDGE       = 1920190,   // 3 ranks
+        SPELL_GLYPH_TACTICS         = 1920200,   // 3 ranks
+        SPELL_GLYPH_SOUL_LINK       = 1920210,   // the Soul Link rewrite
+        SPELL_GLYPH_SOUL_LINK_DOT   = 1920211,   // the deferred damage (base points = one tick)
+        SPELL_GLYPH_RESILIENCE_AURA = 1920233,   // the toggled helper of Demonic Resilience
+        SPELL_GLYPH_SYNERGY         = 1920240,   // Fel Synergy rewrite (2 ranks): effect 0 = percent of the damage that heals
+        SPELL_GLYPH_SYNERGY_HEAL    = 1920242,
         SPELL_FAVOR_FELGUARD        = 1920110,
         SPELL_FELGUARD_FORM         = 1920111,   // the visible form aura (also the castable)
         SPELL_FELGUARD_PLATE        = 1920112,
@@ -155,12 +166,65 @@ namespace
             unit->RemoveAurasDueToSpell(SPELL_FELSTEEL_HELPER);
     }
 
+    uint32 VariantRank(Unit const* owner, uint32 firstRank, uint32 ranks)
+    {
+        for (uint32 rank = ranks; rank > 0; --rank)
+            if (owner->HasAura(firstRank + rank - 1))
+                return rank;
+
+        return 0;
+    }
+
+    // Glyph of the Felguard Form, in the form: the helper auras that carry the rank-dependent bonuses of Unholy Power, Master Demonologist, Demonic Knowledge and Improved Demonic Tactics.
+    void SyncGlyphTalents(Player* player, bool inForm)
+    {
+        uint32 const power = VariantRank(player, SPELL_GLYPH_UNHOLY_POWER, 5);
+        uint32 const master = VariantRank(player, SPELL_GLYPH_MASTER, 5);
+        uint32 const knowledge = VariantRank(player, SPELL_GLYPH_KNOWLEDGE, 3);
+        uint32 const tactics = VariantRank(player, SPELL_GLYPH_TACTICS, 3);
+        if (!inForm || !(power || master || knowledge || tactics))
+        {
+            player->RemoveAurasDueToSpell(SPELL_GLYPH_HELPER);
+            player->RemoveAurasDueToSpell(SPELL_GLYPH_TACTICS_HELPER);
+            return;
+        }
+
+        if (!player->HasAura(SPELL_GLYPH_HELPER))
+            player->CastSpell(player, SPELL_GLYPH_HELPER, true);
+
+        if (Aura* aura = player->GetAura(SPELL_GLYPH_HELPER))
+        {
+            if (AuraEffect* effect = aura->GetEffect(EFFECT_0))
+                effect->ChangeAmount(int32(2 * power + master));
+            if (AuraEffect* effect = aura->GetEffect(EFFECT_1))
+                effect->ChangeAmount(-int32(master));
+            if (AuraEffect* effect = aura->GetEffect(EFFECT_2))
+                effect->ChangeAmount(int32((player->GetStat(STAT_STAMINA) + player->GetStat(STAT_INTELLECT)) * 0.04f * float(knowledge)));
+        }
+
+        int32 const crit = int32(player->GetFloatValue(PLAYER_SPELL_CRIT_PERCENTAGE1 + SPELL_SCHOOL_SHADOW) * 0.1f * float(tactics));
+        if (crit > 0)
+        {
+            if (!player->HasAura(SPELL_GLYPH_TACTICS_HELPER))
+                player->CastSpell(player, SPELL_GLYPH_TACTICS_HELPER, true);
+
+            if (AuraEffect* effect = player->GetAuraEffect(SPELL_GLYPH_TACTICS_HELPER, EFFECT_0))
+                effect->ChangeAmount(crit);
+        }
+        else
+            player->RemoveAurasDueToSpell(SPELL_GLYPH_TACTICS_HELPER);
+    }
+
     // The idempotent state of the Felguard Favor: called by the Favor's 2 sec tick and by the hooks of the form. In the form: no pet, Felguard Plate on, Felsteel helper by its Boon.
     // Out of the form: a Felguard is dismissed, the helpers are off.
     void ReconcileForm(Player* player)
     {
         if (!player || !player->IsInWorld() || !player->IsAlive())
             return;
+
+        SyncGlyphTalents(player, InFelguardForm(player));
+        if (!InFelguardForm(player))
+            player->RemoveAurasDueToSpell(SPELL_GLYPH_RESILIENCE_AURA);
 
         if (InFelguardForm(player))
         {
@@ -492,6 +556,72 @@ class spell_dem_felguard_favor : public AuraScript
     }
 };
 
+// Glyph of the Felguard Form, Demonic Resilience: a toggle. Casting it puts the helper on, casting it again takes it off.
+class spell_dem_resilience_toggle : public SpellScript
+{
+    PrepareSpellScript(spell_dem_resilience_toggle);
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        if (!caster)
+            return;
+
+        if (caster->HasAura(SPELL_GLYPH_RESILIENCE_AURA))
+            caster->RemoveAurasDueToSpell(SPELL_GLYPH_RESILIENCE_AURA);
+        else
+            caster->CastSpell(caster, SPELL_GLYPH_RESILIENCE_AURA, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_dem_resilience_toggle::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// Glyph of the Felguard Form, Fel Synergy: the passive procs on damage with the rank's chance, in the form only; it heals the warlock for the percent (effect 0) of the damage.
+class spell_dem_fel_synergy : public AuraScript
+{
+    PrepareAuraScript(spell_dem_fel_synergy);
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        DamageInfo const* damageInfo = eventInfo.GetDamageInfo();
+        Unit* warlock = GetTarget();
+        if (!damageInfo || !damageInfo->GetDamage() || !InFelguardForm(warlock))
+            return;
+
+        int32 const heal = CalculatePct(int32(damageInfo->GetDamage()), aurEff->GetAmount());
+        if (heal > 0)
+            warlock->CastCustomSpell(SPELL_GLYPH_SYNERGY_HEAL, SPELLVALUE_BASE_POINT0, heal, warlock, true, nullptr, aurEff);
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_dem_fel_synergy::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
+// Glyph of the Felguard Form, Soul Link: in the form a fifth of every blow taken is deferred and ticks on the warlock as shadow damage over 6 sec.
+class MoonlitDemonologySoulLinkScript : public UnitScript
+{
+public:
+    MoonlitDemonologySoulLinkScript() : UnitScript("MoonlitDemonologySoulLinkScript", true, { UNITHOOK_ON_DAMAGE }) { }
+
+    void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
+    {
+        if (!victim || !victim->IsPlayer() || !damage || attacker == victim || !victim->HasAura(SPELL_GLYPH_SOUL_LINK) || !InFelguardForm(victim))
+            return;
+
+        uint32 const deferred = CalculatePct(damage, 20);
+        if (deferred < 3)
+            return;
+
+        damage -= deferred;
+        victim->CastCustomSpell(SPELL_GLYPH_SOUL_LINK_DOT, SPELLVALUE_BASE_POINT0, int32(deferred / 3), victim, true);
+    }
+};
+
 // The Felguard Form aura itself (a transform): at once on gaining it the pet goes and the helpers come; on losing it they go. (The Favor's tick catches anything this misses, for example
 // a form that comes back with a login before the player is in the world.)
 class spell_dem_felguard_form : public AuraScript
@@ -687,6 +817,9 @@ void AddMoonlitBlessingsDemonologyScripts()
     RegisterSpellScript(spell_dem_felguard_form);
     RegisterSpellScript(spell_dem_no_summon_in_form);
     RegisterSpellScript(spell_dem_metamorphosis_master);
+    RegisterSpellScript(spell_dem_resilience_toggle);
+    RegisterSpellScript(spell_dem_fel_synergy);
+    new MoonlitDemonologySoulLinkScript();
     RegisterSpellScript(spell_dem_summoner);
     RegisterSpellScript(spell_dem_summoner_empowerment);
     RegisterSpellScript(spell_dem_legion_demon);

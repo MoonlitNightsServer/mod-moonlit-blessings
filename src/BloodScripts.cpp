@@ -47,6 +47,8 @@
 #include <algorithm>
 #include <list>
 #include <map>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -69,6 +71,8 @@ namespace
         SPELL_MENDER_CONVERSION  = 1110140,   // trigger of effect 0 = the heal helper
         SPELL_MENDER_RUNE_TAP    = 1110150,   // effect 2: percent of maximum health the group heal gives
         SPELL_MENDING_COIL       = 1110160,
+        SPELL_BEAST_STRIKE       = 1110190,   // Glyph of the Bloodcaller: the Beast's copy of a Blood strike (base points = the damage)
+        SPELL_BEAST_BOIL         = 1110191,   // the Beast's Blood Boil around itself (base points = the damage to each enemy)
 
         // stock spells
         SPELL_MARK_OF_BLOOD      = 49005,
@@ -123,6 +127,36 @@ namespace
     bool IsBeast(Unit const* unit)
     {
         return unit && unit->IsCreature() && unit->GetEntry() == NPC_BEAST_BODY && unit->GetUInt32Value(UNIT_CREATED_BY_SPELL) == SPELL_BLOODCALLER_BEAST;
+    }
+
+    // Glyph of the Sanguine Mender: the worms store the healing their bites make and your overheal. A full store (15% of your maximum health) leaps to the ally with the lowest health percent.
+    std::mutex g_wormLock;
+    std::unordered_map<uint64, uint32> g_wormStore;
+
+    void FeedWorms(Unit* knight, uint32 amount)
+    {
+        if (!knight || !amount)
+            return;
+
+        uint32 leap = 0;
+        {
+            std::lock_guard<std::mutex> guard(g_wormLock);
+            uint32& stored = g_wormStore[knight->GetGUID().GetRawValue()];
+            stored += amount;
+            if (stored >= knight->CountPctFromMaxHealth(15))
+            {
+                leap = stored;
+                stored = 0;
+            }
+        }
+
+        if (!leap)
+            return;
+
+        SpellInfo const* conversion = sSpellMgr->GetSpellInfo(SPELL_MENDER_CONVERSION);
+        uint32 const healSpell = conversion ? conversion->Effects[EFFECT_0].TriggerSpell : 0;
+        if (Unit* ally = healSpell ? BlessingsHelpers::LowestHealthPercentFriend(knight, 40.0f) : nullptr)
+            knight->CastCustomSpell(healSpell, SPELLVALUE_BASE_POINT0, int32(leap), ally, true);
     }
 
     // The live Blood Worms of the death knight, the oldest first (a creature's guid counter only grows).
@@ -421,6 +455,42 @@ class spell_blessings_blood_bladed_heart : public AuraScript
 
 // Favor of the Bloodcaller. Effect 0 (a 9% proc on weapon hits): calls the Blood Worms at the target (its amount is the most worms at once). Effect 1: a driver that keeps the permanent
 // Blood Beast beside the death knight; it calls the beast again within 2 sec if it died or was dismissed.
+// Sanguine Mender's Conversion: effect 0 is the proc trigger (the percent of the damage dealt, 170 = 85% of the normal damage after the 50% loss). The heal goes to the group member with
+// the lowest health percent within 40 yards; what the ally cannot take is stored in the Blood Worms.
+class spell_blessings_blood_mender_conversion : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_blood_mender_conversion);
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        DamageInfo* damageInfo = eventInfo.GetDamageInfo();
+        if (!damageInfo || !damageInfo->GetDamage())
+            return;
+
+        Unit* knight = GetTarget();
+        Unit* ally = BlessingsHelpers::LowestHealthPercentFriend(knight, 40.0f);
+        if (!ally)
+            return;
+
+        int32 const heal = CalculatePct(int32(damageInfo->GetDamage()), aurEff->GetAmount());
+        int32 const missing = int32(ally->GetMaxHealth() - ally->GetHealth());
+        int32 const direct = std::min(heal, missing);
+        uint32 const healSpellId = aurEff->GetSpellInfo()->Effects[aurEff->GetEffIndex()].TriggerSpell;
+        if (direct > 0)
+            knight->CastCustomSpell(healSpellId, SPELLVALUE_BASE_POINT0, direct, ally, true, nullptr, aurEff);
+
+        if (heal > direct)
+            FeedWorms(knight, uint32(heal - direct));
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_blessings_blood_mender_conversion::HandleProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+    }
+};
+
 class spell_blessings_blood_bloodcaller : public AuraScript
 {
     PrepareAuraScript(spell_blessings_blood_bloodcaller);
@@ -449,7 +519,13 @@ class spell_blessings_blood_bloodcaller : public AuraScript
         }
 
         if (beast && beast->IsAlive())
+        {
             Dress(beast, true);
+            // the Glyph of the Bloodcaller: one Blood Rune stays bound to the Beast for as long as it lives
+            if (Player* player = knight->ToPlayer())
+                if (player->getClass() == CLASS_DEATH_KNIGHT && player->GetRuneCooldown(0) < 4000)
+                    player->SetRuneCooldown(0, 6000);
+        }
     }
 
     void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
@@ -467,6 +543,10 @@ class spell_blessings_blood_bloodcaller : public AuraScript
         for (Unit* beast : beasts)
             if (TempSummon* summon = beast->ToTempSummon())
                 summon->UnSummon();
+
+        if (Player* player = GetTarget()->ToPlayer())
+            if (player->getClass() == CLASS_DEATH_KNIGHT)
+                player->SetRuneCooldown(0, 0);
     }
 
     void HandlePeriodic(AuraEffect const* /*aurEff*/)
@@ -663,6 +743,14 @@ public:
     // The Mender: the rune weapon's damage (already reduced by the Mender's loss: the core takes the owner's bonuses) heals the most injured ally for the same amount.
     void OnDamage(Unit* attacker, Unit* /*victim*/, uint32& damage) override
     {
+        if (attacker && damage && IsWorm(attacker))
+        {
+            if (Unit* owner = attacker->GetOwner())
+                if (owner->HasAura(SPELL_SANGUINE_MENDER))
+                    FeedWorms(owner, damage);                      // the worms fill up from their own bites
+            return;
+        }
+
         if (!attacker || attacker->GetEntry() != NPC_RUNE_WEAPON || !damage)
             return;
 
@@ -716,6 +804,23 @@ public:
     void OnSpellCast(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool /*skipCheck*/) override
     {
         Player* knight = caster ? caster->ToPlayer() : nullptr;
+        if (knight && spell && spellInfo && knight->HasAura(SPELL_BLOODCALLER) && !spell->IsTriggered())
+        {
+            // Glyph of the Bloodcaller: the Blood Beast casts its own Heart Strike, Blood Strike or Blood Boil when you cast yours
+            uint32 const first = sSpellMgr->GetFirstSpellInChain(spellInfo->Id);
+            bool const boil = first == 48721;
+            if (first == 55050 || first == 45902 || boil)
+                if (Unit* beast = FindBeast(knight))
+                {
+                    int32 const damage = int32(knight->GetTotalAttackPowerValue(BASE_ATTACK) * (boil ? 0.25f : 0.4f));
+                    Unit* target = spell->m_targets.GetUnitTarget();
+                    if (boil)
+                        beast->CastCustomSpell(SPELL_BEAST_BOIL, SPELLVALUE_BASE_POINT0, damage, beast, true);
+                    else if (target && target->IsAlive() && knight->IsHostileTo(target))
+                        beast->CastCustomSpell(SPELL_BEAST_STRIKE, SPELLVALUE_BASE_POINT0, damage, target, true);
+                }
+        }
+
         if (!knight || !spell || !spellInfo || spellInfo->PowerType != POWER_RUNIC_POWER)
             return;
 
@@ -743,6 +848,7 @@ void AddMoonlitBlessingsBloodScripts()
 {
     RegisterSpellScript(spell_blessings_blood_bladed_heart);
     RegisterSpellScript(spell_blessings_blood_bloodcaller);
+    RegisterSpellScript(spell_blessings_blood_mender_conversion);
     RegisterSpellScript(spell_blessings_blood_crimson_tempest);
     RegisterSpellScript(spell_blessings_blood_marked_heal);
     RegisterSpellScript(spell_blessings_blood_mender_rune_tap);

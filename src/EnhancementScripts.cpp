@@ -126,42 +126,78 @@ namespace
         return Imbue::Other;
     }
 
-    // Glyph of the Greatsword: a two-hander carries Windfury in the temporary slot and Rockbiter or Flametongue in the second (property) enchantment slot of the same weapon.
+    // Glyph of the Greatsword: a two-hander carries Windfury in the temporary slot and Rockbiter or Flametongue in a free property enchantment slot of the same weapon (see SecondImbueSlot).
     bool IsSecondImbue(Imbue kind)
     {
         return kind == Imbue::Flametongue || kind == Imbue::Rockbiter;
     }
 
-    void SetSecondImbue(Player* player, Item* item, uint32 enchantId)
+    // The property slots (7 to 11) hold the stats of random-suffix and random-property weapons ("of the Tiger"), so the second imbue never takes a slot that is in use:
+    // it sits in the highest empty property slot, and is found again by its name, never by a fixed slot.
+    constexpr uint32 NO_SLOT = MAX_ENCHANTMENT_SLOT;
+
+    uint32 SecondImbueSlot(Item const* item)
+    {
+        for (uint32 slot = MAX_ENCHANTMENT_SLOT; slot-- > PROP_ENCHANTMENT_SLOT_0;)
+            if (IsSecondImbue(ImbueKind(item->GetEnchantmentId(EnchantmentSlot(slot)))))
+                return slot;
+
+        return NO_SLOT;
+    }
+
+    uint32 FreeImbueSlot(Item const* item)
+    {
+        for (uint32 slot = MAX_ENCHANTMENT_SLOT; slot-- > PROP_ENCHANTMENT_SLOT_0;)
+            if (!item->GetEnchantmentId(EnchantmentSlot(slot)))
+                return slot;
+
+        return NO_SLOT;
+    }
+
+    // False when the weapon has no empty property slot (the cast then works as in stock: the new imbue replaces the old one).
+    bool SetSecondImbue(Player* player, Item* item, uint32 enchantId)
     {
         SpellItemEnchantmentEntry const* enchant = sSpellItemEnchantmentStore.LookupEntry(enchantId);
         if (!enchant)
-            return;
+            return false;
 
-        if (item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0))
-            player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_0, false);
+        uint32 slot = SecondImbueSlot(item);
+        if (slot == NO_SLOT)
+            slot = FreeImbueSlot(item);
+        else
+            player->ApplyEnchantment(item, EnchantmentSlot(slot), false);
 
-        item->SetEnchantment(PROP_ENCHANTMENT_SLOT_0, enchantId, IMBUE_DURATION_MS, enchant->charges, player->GetGUID());
-        player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_0, true);
+        if (slot == NO_SLOT)
+            return false;
+
+        item->SetEnchantment(EnchantmentSlot(slot), enchantId, IMBUE_DURATION_MS, enchant->charges, player->GetGUID());
+        player->ApplyEnchantment(item, EnchantmentSlot(slot), true);
+        player->AddEnchantmentDuration(item, EnchantmentSlot(slot), IMBUE_DURATION_MS);
+        return true;
     }
 
     void ClearSecondImbue(Player* player, Item* item)
     {
-        if (!item || !IsSecondImbue(ImbueKind(item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0))))
+        if (!item)
             return;
 
-        player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_0, false);
-        item->ClearEnchantment(PROP_ENCHANTMENT_SLOT_0);
+        uint32 const slot = SecondImbueSlot(item);
+        if (slot == NO_SLOT)
+            return;
+
+        player->ApplyEnchantment(item, EnchantmentSlot(slot), false);
+        item->ClearEnchantment(EnchantmentSlot(slot));
     }
 
     // Start the imbue's 30 minutes again (the second imbue of a Greatsword too).
     void RefreshImbue(Player* player, Item* item)
     {
-        if (item && IsSecondImbue(ImbueKind(item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0))))
-        {
-            player->AddEnchantmentDuration(item, PROP_ENCHANTMENT_SLOT_0, IMBUE_DURATION_MS);
-            item->SetEnchantmentDuration(PROP_ENCHANTMENT_SLOT_0, IMBUE_DURATION_MS, player);
-        }
+        if (item)
+            if (uint32 const slot = SecondImbueSlot(item); slot != NO_SLOT)
+            {
+                player->AddEnchantmentDuration(item, EnchantmentSlot(slot), IMBUE_DURATION_MS);
+                item->SetEnchantmentDuration(EnchantmentSlot(slot), IMBUE_DURATION_MS, player);
+            }
 
         if (!IsShamanImbue(item))
             return;
@@ -504,8 +540,8 @@ class spell_blessings_greatsword_imbue : public SpellScript
             SetSecondImbue(player, item, item->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT));
         else if (IsSecondImbue(cast) && held == Imbue::Windfury)
         {
-            PreventHitDefaultEffect(effIndex);
-            SetSecondImbue(player, item, enchantId);
+            if (SetSecondImbue(player, item, enchantId))
+                PreventHitDefaultEffect(effIndex);
         }
         else if (!(cast == Imbue::Windfury && held == Imbue::Windfury))
             ClearSecondImbue(player, item);

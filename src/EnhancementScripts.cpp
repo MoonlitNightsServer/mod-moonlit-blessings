@@ -35,7 +35,10 @@ namespace
         SPELL_PACK_LEADER_HASTE          = 1820051,
         SPELL_EARTH_SLAM                 = 1820071,
         SPELL_GLYPH_FROZEN_POWER         = 1820150,   // Glyph of the Spirit Healer: Frozen Power rewrite (2 ranks): weapon strikes hit slowed targets 10% harder per rank
-        SPELL_STATIC_SHOCK_MANA          = 1820160    // the mana helper of the Static Shock rewrite
+        SPELL_STATIC_SHOCK_MANA          = 1820160,   // the mana helper of the Static Shock rewrite
+        SPELL_GLYPH_GRIP                 = 1820190,   // Glyph of the Greatsword: the Dual Wield rewrite (two-handed grip)
+        SPELL_GLYPH_DW_SPEC              = 1820200,   // Dual Wield Specialization rewrite (3 ranks): Stormstrike and Earth Slam +6% per rank
+        SPELL_GLYPH_GS_FROZEN_POWER      = 1820210    // Frozen Power rewrite (2 ranks): Earth Slam +10% per rank on slowed targets
     };
 
     enum EnhancementCreatures : uint32
@@ -365,6 +368,109 @@ public:
     }
 };
 
+// Generic teacher: the aura teaches the spell named by its first effect's amount while it is on the player and takes it away when it ends (not when the player merely logs out).
+class spell_blessings_teach_spell : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_teach_spell);
+
+    void HandleApply(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            if (uint32 const spellId = uint32(std::max(aurEff->GetAmount(), 0)))
+                if (!player->HasSpell(spellId))
+                    player->learnSpell(spellId);
+    }
+
+    void HandleRemove(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player || !player->GetSession() || player->GetSession()->PlayerLogout())
+            return;
+
+        if (uint32 const spellId = uint32(std::max(aurEff->GetAmount(), 0)))
+            player->removeSpell(spellId, SPEC_MASK_ALL, false);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_blessings_teach_spell::HandleApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_blessings_teach_spell::HandleRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// Glyph of the Greatsword, the Dual Wield rewrite (two-handed grip): the off-hand slot is emptied when the grip comes and stays closed while it is there.
+class spell_blessings_greatsword_grip : public AuraScript
+{
+    PrepareAuraScript(spell_blessings_greatsword_grip);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            player->AutoUnequipOffhandIfNeed(true);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_blessings_greatsword_grip::HandleApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// Glyph of the Greatsword: the scaling of Stormstrike, Windfury Attack and Earth Slam, and the closed off-hand slot.
+class MoonlitBlessingsGreatswordScript : public UnitScript
+{
+public:
+    MoonlitBlessingsGreatswordScript() : UnitScript("MoonlitBlessingsGreatswordScript", true, { UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN }) { }
+
+    void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override
+    {
+        if (!target || !attacker || !spellInfo || damage <= 0 || !attacker->IsPlayer() || !attacker->HasAura(SPELL_GLYPH_GRIP))
+            return;
+
+        uint32 const id = spellInfo->Id;
+        bool const stormstrike = id == 32175 || id == 32176;                       // the two weapon hits of Stormstrike
+        bool const windfury = id == 25504 || id == 33750;                          // the weapon hits of Windfury Weapon
+        bool const earthSlam = id == SPELL_EARTH_SLAM;
+        if (!stormstrike && !windfury && !earthSlam)
+            return;
+
+        if (stormstrike || windfury)
+            if (Item* weapon = attacker->ToPlayer()->GetWeaponForAttack(BASE_ATTACK))
+            {
+                float const speed = float(weapon->GetTemplate()->Delay) / 1000.0f;
+                if (speed > 2.0f)
+                    damage = int32(float(damage) * speed / 2.0f);                // linear with the weapon speed, no cap
+            }
+
+        if (stormstrike || earthSlam)
+            for (uint32 rank = 3; rank > 0; --rank)
+                if (attacker->HasAura(SPELL_GLYPH_DW_SPEC + rank - 1))
+                {
+                    damage += CalculatePct(damage, 6 * rank);
+                    break;
+                }
+
+        if (earthSlam && target->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED))
+            for (uint32 rank = 2; rank > 0; --rank)
+                if (attacker->HasAura(SPELL_GLYPH_GS_FROZEN_POWER + rank - 1))
+                {
+                    damage += CalculatePct(damage, 10 * rank);
+                    break;
+                }
+    }
+};
+
+class MoonlitBlessingsGreatswordPlayerScript : public PlayerScript
+{
+public:
+    MoonlitBlessingsGreatswordPlayerScript() : PlayerScript("MoonlitBlessingsGreatswordPlayerScript", { PLAYERHOOK_CAN_EQUIP_ITEM }) { }
+
+    bool OnPlayerCanEquipItem(Player* player, uint8 slot, uint16& /*dest*/, Item* /*item*/, bool /*swap*/, bool notLoading) override
+    {
+        // a player action (not the login) cannot put anything in the off-hand slot while the grip is held
+        return !(notLoading && slot == EQUIPMENT_SLOT_OFFHAND && player->HasAura(SPELL_GLYPH_GRIP));
+    }
+};
+
 void AddMoonlitBlessingsEnhancementScripts()
 {
     RegisterSpellScript(spell_blessings_spirit_armor);
@@ -374,6 +480,10 @@ void AddMoonlitBlessingsEnhancementScripts()
     RegisterSpellScript(spell_blessings_greatsword);
     RegisterSpellScript(spell_blessings_enhancement_spirit_healer);
     RegisterSpellScript(spell_blessings_enhancement_static_orb);
+    RegisterSpellScript(spell_blessings_teach_spell);
     new MoonlitBlessingsSpiritWolvesScript();
     new MoonlitBlessingsSpiritHealerScript();
+    RegisterSpellScript(spell_blessings_greatsword_grip);
+    new MoonlitBlessingsGreatswordScript();
+    new MoonlitBlessingsGreatswordPlayerScript();
 }
